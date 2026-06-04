@@ -73,11 +73,21 @@
   .dim-label { font-variant-numeric: tabular-nums; font-weight: 500; }
 
   .search-row { margin-bottom: 18px; }
-  #search {
-    width: 100%; font: inherit; padding: 12px 14px;
-    border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  .dim-search {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 14px;
   }
-  #search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .dim-search .mag { font-size: 16px; margin-right: 2px; }
+  .dim-field {
+    width: 70px; font: inherit; text-align: center;
+    padding: 8px 6px; border: 1px solid var(--line); border-radius: 8px;
+    background: #fff; font-variant-numeric: tabular-nums;
+  }
+  .dim-field:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .dim-search .x { color: var(--muted); font-weight: 600; }
+  #search-clear { margin-left: auto; }
+  .search-hint { font-size: 12px; color: var(--muted); margin-top: 6px; padding-left: 2px; }
 
   #searchResults:not(:empty) {
     background: var(--card); border: 1px solid var(--accent); border-radius: 12px;
@@ -134,8 +144,16 @@
   <section id="tab-tracker" class="tab-panel">
     <div id="reorderBanner"></div>
     <div class="search-row">
-      <input id="search" type="search" autocomplete="off"
-             placeholder="🔍  Search boxes by dimension — e.g. type 6x">
+      <div class="dim-search">
+        <span class="mag">🔍</span>
+        <input class="dim-field" id="search-l" inputmode="numeric" autocomplete="off" placeholder="L">
+        <span class="x">×</span>
+        <input class="dim-field" id="search-w" inputmode="numeric" autocomplete="off" placeholder="W">
+        <span class="x">×</span>
+        <input class="dim-field" id="search-h" inputmode="numeric" autocomplete="off" placeholder="H">
+        <button class="tiny" id="search-clear" type="button">Clear</button>
+      </div>
+      <div class="search-hint">Search by size — fill any box, leave the rest blank. Press <b>space</b> to jump to the next box.</div>
     </div>
     <div id="searchResults"></div>
     <div class="areas" id="areas"></div>
@@ -256,20 +274,43 @@ async function deleteType(id) {
   catch (e) { alert('Could not delete box size: ' + e.message); }
 }
 
-// ---- Search by dimension ----------------------------------------------
-function normalize(s) { return (s || '').toLowerCase().replace(/\s+/g, ''); }
+// ---- Search by dimension (3 columns: L × W × H) ------------------------
+// Split a box's dimensions into its number parts: "12x6x6" -> ["12","6","6"].
+function dimParts(t) {
+  return (t.dimensions || '').split(/[^0-9.]+/).filter(Boolean);
+}
+// Read the three search fields as [L, W, H] trimmed strings.
+function searchParts() {
+  return ['search-l', 'search-w', 'search-h']
+    .map(id => (document.getElementById(id).value || '').trim());
+}
+// A box matches if, for every FILLED column, the box's number in that position
+// starts with what was typed. Blank columns match anything.
+function matchesParts(t, parts) {
+  const comp = dimParts(t);
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] === '') continue;
+    if (!comp[i] || !comp[i].startsWith(parts[i])) return false;
+  }
+  return true;
+}
+// Bold the components that the search matched, joined back with × .
+function highlightParts(t, parts) {
+  return dimParts(t).map((c, i) =>
+    (parts[i] && c.startsWith(parts[i])) ? `<mark>${escapeHtml(c)}</mark>` : escapeHtml(c)
+  ).join(' × ');
+}
 
-function renderSearch(query) {
+function renderSearch() {
   const panel = document.getElementById('searchResults');
-  const q = normalize(query);
-  if (!q) { panel.innerHTML = ''; return; }
+  const parts = searchParts();
+  if (parts.every(p => p === '')) { panel.innerHTML = ''; return; }
 
-  const matches = state.boxTypes
-    .filter(t => normalize(t.dimensions).includes(q))
-    .sort(byLength);
+  const pattern = parts.map(p => p === '' ? 'any' : escapeHtml(p)).join(' × ');
+  const matches = state.boxTypes.filter(t => matchesParts(t, parts)).sort(byLength);
 
   if (matches.length === 0) {
-    panel.innerHTML = `<div class="sr-head">No boxes match dimension "<b>${escapeHtml(query)}</b>".</div>`;
+    panel.innerHTML = `<div class="sr-head">No boxes match <b>${pattern}</b>.</div>`;
     return;
   }
 
@@ -282,30 +323,13 @@ function renderSearch(query) {
       ? `<div class="sr-loc">${total} total — ${locations.map(l => `${escapeHtml(l.name)}: <b>${l.qty}</b>`).join(' · ')}</div>`
       : `<div class="sr-loc none">Not currently in any area.</div>`;
     return `<div class="sr-item">
-      <span class="sr-name">${highlight(t.dimensions, q)}</span>
+      <span class="sr-name">${highlightParts(t, parts)}</span>
       ${isLow(t) ? `<span class="low">reorder</span>` : ''}
       ${loc}
     </div>`;
   }).join('');
 
-  panel.innerHTML = `<div class="sr-head"><b>${matches.length}</b> box(es) matching "<b>${escapeHtml(query)}</b>"</div>${items}`;
-}
-
-function highlight(dimensions, normQuery) {
-  const norm = normalize(dimensions);
-  const at = norm.indexOf(normQuery);
-  if (at < 0) return escapeHtml(dimensions);
-  let oStart = -1, oEnd = -1, seen = 0;
-  for (let i = 0; i < dimensions.length; i++) {
-    if (/\s/.test(dimensions[i])) continue;
-    if (seen === at) oStart = i;
-    if (seen === at + normQuery.length - 1) { oEnd = i; break; }
-    seen++;
-  }
-  if (oStart < 0 || oEnd < 0) return escapeHtml(dimensions);
-  return escapeHtml(dimensions.slice(0, oStart))
-    + '<mark>' + escapeHtml(dimensions.slice(oStart, oEnd + 1)) + '</mark>'
-    + escapeHtml(dimensions.slice(oEnd + 1));
+  panel.innerHTML = `<div class="sr-head"><b>${matches.length}</b> box(es) matching <b>${pattern}</b></div>${items}`;
 }
 
 // ---- Reorder / restock warnings ---------------------------------------
@@ -381,8 +405,7 @@ function render() {
   }
 
   renderReorder();
-  const si = document.getElementById('search');
-  if (si && si.value) renderSearch(si.value);
+  renderSearch();
 }
 
 // ---- Events ------------------------------------------------------------
@@ -390,8 +413,23 @@ document.getElementById('addArea').onclick = addArea;
 document.getElementById('addType').onclick = addType;
 document.getElementById('refresh').onclick = refresh;
 
-const searchInput = document.getElementById('search');
-searchInput.addEventListener('input', () => renderSearch(searchInput.value));
+// Three dimension search fields: re-search on input; space jumps to next field.
+const searchFields = ['search-l', 'search-w', 'search-h'].map(id => document.getElementById(id));
+searchFields.forEach((field, i) => {
+  field.addEventListener('input', renderSearch);
+  field.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.code === 'Space') {
+      e.preventDefault();                       // don't type a space
+      const next = searchFields[i + 1];
+      if (next) next.focus();
+    }
+  });
+});
+document.getElementById('search-clear').onclick = () => {
+  searchFields.forEach(f => { f.value = ''; });
+  renderSearch();
+  searchFields[0].focus();
+};
 
 document.querySelector('.tabs').addEventListener('click', (e) => {
   const tab = e.target.closest('.tab');
