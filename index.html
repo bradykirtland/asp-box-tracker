@@ -108,6 +108,7 @@
     display: flex; align-items: center; justify-content: space-between;
     padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--accent-soft);
   }
+  .area-card.collapsed .area-head { border-bottom: none; background: var(--card); }
   .area-head h2 { margin: 0; font-size: 16px; }
   .area-stats { font-size: 13px; color: var(--muted); margin-top: 2px; }
   .area-stats b { color: var(--ink); }
@@ -158,9 +159,8 @@
     <div id="searchResults"></div>
     <div class="areas" id="areas"></div>
     <p class="hint">
-      Boxes are listed by length (the first dimension), shortest first.
-      Use +/− to adjust counts — changes save for everyone automatically.
-      To add or remove areas and box sizes, use the <b>Add / Manage</b> tab.
+      Search by size above to find a box and adjust its count in each area.
+      Changes save for everyone automatically. Add new areas and box sizes on the <b>Add / Manage</b> tab.
     </p>
   </section>
 
@@ -172,8 +172,7 @@
     <p class="hint">
       <b>Add area</b> creates a new location. <b>Add box size</b> creates a new box
       (dimensions like <code>12x6x6</code>, plus an optional restock-warning level).
-      New items appear on the <b>Tracker</b> tab, where you set their counts.
-      Deleting an area or box size removes it for everyone.
+      New items appear on the <b>Tracker</b> tab — search there to set their counts.
     </p>
   </section>
 </main>
@@ -353,7 +352,7 @@ function render() {
       const typesPresent = state.boxTypes.filter(t => getQty(area.id, t.id) > 0).length;
       const totalBoxes = state.boxTypes.reduce((sum, t) => sum + getQty(area.id, t.id), 0);
       const card = document.createElement('div');
-      card.className = 'area-card';
+      card.className = 'area-card' + (searching ? '' : ' collapsed');
 
       const rows = visibleTypes.map(t => {
         const qty = getQty(area.id, t.id);
@@ -366,9 +365,6 @@ function render() {
               <button class="tiny" data-act="inc" data-area="${area.id}" data-type="${t.id}">+</button>
             </div>
           </td>
-          <td class="col-right">
-            <button class="link" data-act="del-type" data-type="${t.id}">delete size</button>
-          </td>
         </tr>`;
       }).join('');
 
@@ -378,14 +374,15 @@ function render() {
             <h2>${escapeHtml(area.name)}</h2>
             <div class="area-stats"><b>${typesPresent}</b> box size(s) here · <b>${totalBoxes}</b> boxes total</div>
           </div>
-          <button class="link" data-act="del-area" data-area="${area.id}">delete area</button>
         </div>
-        ${visibleTypes.length === 0
-          ? `<div class="empty">${searching ? 'No box sizes match your search.' : 'No box sizes yet. Add one on the Add / Manage tab.'}</div>`
-          : `<table>
-              <tr><th>Box (dimensions)</th><th>Quantity</th><th></th></tr>
-              ${rows}
-            </table>`}
+        ${!searching
+          ? ''
+          : (visibleTypes.length === 0
+              ? `<div class="empty">No box sizes match your search.</div>`
+              : `<table>
+                  <tr><th>Box (dimensions)</th><th>Quantity</th></tr>
+                  ${rows}
+                </table>`)}
       `;
       container.appendChild(card);
     }
