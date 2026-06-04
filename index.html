@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASP Box Tracker</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --ink: #1d2433;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --accent: #1e3a8a;          /* ASP dark blue, matches Bubbles */
+    --accent-soft: #eef2ff;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.45;
+  }
+  header {
+    background: var(--accent);
+    color: #fff;
+    padding: 18px 24px;
+  }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: #c7d2fe; font-size: 13px; }
+  main { max-width: 1000px; margin: 0 auto; padding: 24px; }
+
+  .statusbar {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px; color: var(--muted); margin-bottom: 14px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #9ca3af; }
+  .dot.ok { background: #16a34a; }
+  .dot.err { background: var(--danger); }
+
+  button {
+    font: inherit; cursor: pointer;
+    border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    padding: 8px 14px; border-radius: 8px; transition: background .12s, border-color .12s;
+  }
+  button:hover { background: #f9fafb; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { background: #15296b; }
+  button.tiny { padding: 2px 9px; font-size: 14px; border-radius: 6px; }
+  button.link { border: none; background: none; color: var(--danger); padding: 4px 6px; }
+  button.link:hover { text-decoration: underline; background: none; }
+
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 22px; }
+  .tab {
+    border: none; background: none; border-radius: 0; padding: 10px 16px;
+    color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab:hover { background: none; color: var(--ink); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .reorder { background: #fef2f2; border: 1px solid #fecaca; border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; }
+  .reorder-title { font-weight: 700; color: var(--danger); margin-bottom: 6px; }
+  .reorder ul { margin: 0; padding-left: 20px; font-size: 14px; }
+  .reorder li { margin: 3px 0; }
+  .low {
+    display: inline-block; margin-left: 8px; font-size: 11px; font-weight: 700;
+    color: #fff; background: var(--danger); border-radius: 5px; padding: 1px 7px;
+    text-transform: uppercase; letter-spacing: .03em; vertical-align: middle;
+  }
+
+  .dim-label { font-variant-numeric: tabular-nums; font-weight: 500; }
+
+  .search-row { margin-bottom: 18px; }
+  #search {
+    width: 100%; font: inherit; padding: 12px 14px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  }
+  #search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  #searchResults:not(:empty) {
+    background: var(--card); border: 1px solid var(--accent); border-radius: 12px;
+    padding: 6px 0; margin-bottom: 22px;
+  }
+  .sr-head { padding: 8px 18px; font-size: 13px; color: var(--muted); }
+  .sr-head b { color: var(--ink); }
+  .sr-item { padding: 12px 18px; }
+  .sr-item + .sr-item { border-top: 1px solid var(--line); }
+  .sr-name { font-weight: 600; }
+  .sr-loc { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .sr-loc.none { color: var(--danger); }
+  mark { background: #fde68a; border-radius: 3px; padding: 0 1px; }
+
+  .areas { display: grid; gap: 18px; }
+  .area-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .area-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--accent-soft);
+  }
+  .area-head h2 { margin: 0; font-size: 16px; }
+  .area-stats { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .area-stats b { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 18px; font-size: 14px; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  tr + tr td { border-top: 1px solid var(--line); }
+  .qty-cell { display: flex; align-items: center; gap: 8px; }
+  .qty-val { min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .empty { padding: 24px 18px; color: var(--muted); font-size: 14px; text-align: center; }
+  .col-right { text-align: right; }
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 28px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📦 ASP Box Tracker</h1>
+  <p>Counts of each packaging box size, per area. Shared across everyone.</p>
+</header>
+
+<main>
+  <div class="statusbar">
+    <span class="dot" id="dot"></span>
+    <span id="statusText">Loading…</span>
+    <button class="tiny" id="refresh" style="margin-left:auto;">Refresh</button>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="tracker">Tracker</button>
+    <button class="tab" data-tab="manage">Add / Manage</button>
+  </div>
+
+  <section id="tab-tracker" class="tab-panel">
+    <div id="reorderBanner"></div>
+    <div class="search-row">
+      <input id="search" type="search" autocomplete="off"
+             placeholder="🔍  Search boxes by dimension — e.g. type 6x">
+    </div>
+    <div id="searchResults"></div>
+    <div class="areas" id="areas"></div>
+    <p class="hint">
+      Boxes are listed by length (the first dimension), shortest first.
+      Use +/− to adjust counts — changes save for everyone automatically.
+      To add or remove areas and box sizes, use the <b>Add / Manage</b> tab.
+    </p>
+  </section>
+
+  <section id="tab-manage" class="tab-panel" hidden>
+    <div class="toolbar">
+      <button class="primary" id="addArea">+ Add area</button>
+      <button id="addType">+ Add box size</button>
+    </div>
+    <p class="hint">
+      <b>Add area</b> creates a new location. <b>Add box size</b> creates a new box
+      (dimensions like <code>12x6x6</code>, plus an optional restock-warning level).
+      New items appear on the <b>Tracker</b> tab, where you set their counts.
+      Deleting an area or box size removes it for everyone.
+    </p>
+  </section>
+</main>
+
+<script>
+// ---- API layer ---------------------------------------------------------
+// Same-origin: this page is served by the API, so we just POST to /api.
+let state = { areas: [], boxTypes: [], inventory: {} };
+let savingCount = 0;   // pause polling while a save is in flight
+
+async function api(action, payload) {
+  const res = await fetch('/api', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...(payload || {}) }),
+  });
+  const data = await res.json();
+  if (data && data.error) throw new Error(data.error);
+  return data;
+}
+
+function setStatus(kind, text) {
+  const dot = document.getElementById('dot');
+  dot.className = 'dot' + (kind ? ' ' + kind : '');
+  document.getElementById('statusText').textContent = text;
+}
+
+async function refresh() {
+  try {
+    state = await api('getState');
+    render();
+    setStatus('ok', 'Synced');
+  } catch (e) {
+    setStatus('err', 'Offline — changes may not be saved. ' + e.message);
+  }
+}
+
+// ---- Read helpers ------------------------------------------------------
+function getQty(areaId, typeId) { return state.inventory[`${areaId}:${typeId}`] || 0; }
+function totalForType(typeId) {
+  return state.areas.reduce((sum, a) => sum + getQty(a.id, typeId), 0);
+}
+function isLow(t) {
+  return t.reorderAt != null && totalForType(t.id) <= t.reorderAt;
+}
+// "Length" = first number in the dimensions (the L in L x W x H). No dims sorts last.
+function boxLength(t) {
+  const nums = (t.dimensions || '').match(/\d+(\.\d+)?/g);
+  return nums && nums.length ? Number(nums[0]) : Infinity;
+}
+function typeLabel(t) {
+  return t.dimensions && t.dimensions.trim() ? t.dimensions : '(no dimensions)';
+}
+function byLength(a, b) {
+  return boxLength(a) - boxLength(b) || typeLabel(a).localeCompare(typeLabel(b));
+}
+
+// ---- Mutations (optimistic, then persist) ------------------------------
+async function adjustQty(areaId, typeId, delta) {
+  const key = `${areaId}:${typeId}`;
+  const next = Math.max((state.inventory[key] || 0) + delta, 0);
+  if (next === 0) delete state.inventory[key]; else state.inventory[key] = next;
+  render();                       // instant feedback
+  savingCount++;
+  try {
+    await api('adjustQty', { areaId, typeId, delta });
+    setStatus('ok', 'Saved');
+  } catch (e) {
+    setStatus('err', 'Could not save — reloading latest. ' + e.message);
+    await refresh();
+  } finally {
+    savingCount--;
+  }
+}
+
+async function addArea() {
+  const name = prompt("Area name (e.g. 'Loading Dock Rack'):");
+  if (!name || !name.trim()) return;
+  try { await api('addArea', { name: name.trim() }); await refresh(); }
+  catch (e) { alert('Could not add area: ' + e.message); }
+}
+async function addType() {
+  const dimensions = prompt("Box dimensions (e.g. '12x6x6'):");
+  if (!dimensions || !dimensions.trim()) return;
+  const reorderRaw = prompt("Recommend a reorder when the total drops to or below (number) — optional:");
+  const reorderAt = reorderRaw !== null && reorderRaw.trim() !== '' ? reorderRaw.trim() : null;
+  try { await api('addType', { dimensions: dimensions.trim(), reorderAt }); await refresh(); }
+  catch (e) { alert('Could not add box size: ' + e.message); }
+}
+async function deleteArea(id) {
+  if (!confirm('Delete this area and its counts for everyone?')) return;
+  try { await api('deleteArea', { id }); await refresh(); }
+  catch (e) { alert('Could not delete area: ' + e.message); }
+}
+async function deleteType(id) {
+  if (!confirm('Delete this box size from every area, for everyone?')) return;
+  try { await api('deleteType', { id }); await refresh(); }
+  catch (e) { alert('Could not delete box size: ' + e.message); }
+}
+
+// ---- Search by dimension ----------------------------------------------
+function normalize(s) { return (s || '').toLowerCase().replace(/\s+/g, ''); }
+
+function renderSearch(query) {
+  const panel = document.getElementById('searchResults');
+  const q = normalize(query);
+  if (!q) { panel.innerHTML = ''; return; }
+
+  const matches = state.boxTypes
+    .filter(t => normalize(t.dimensions).includes(q))
+    .sort(byLength);
+
+  if (matches.length === 0) {
+    panel.innerHTML = `<div class="sr-head">No boxes match dimension "<b>${escapeHtml(query)}</b>".</div>`;
+    return;
+  }
+
+  const items = matches.map(t => {
+    const locations = state.areas
+      .map(a => ({ name: a.name, qty: getQty(a.id, t.id) }))
+      .filter(l => l.qty > 0);
+    const total = locations.reduce((s, l) => s + l.qty, 0);
+    const loc = locations.length
+      ? `<div class="sr-loc">${total} total — ${locations.map(l => `${escapeHtml(l.name)}: <b>${l.qty}</b>`).join(' · ')}</div>`
+      : `<div class="sr-loc none">Not currently in any area.</div>`;
+    return `<div class="sr-item">
+      <span class="sr-name">${highlight(t.dimensions, q)}</span>
+      ${isLow(t) ? `<span class="low">reorder</span>` : ''}
+      ${loc}
+    </div>`;
+  }).join('');
+
+  panel.innerHTML = `<div class="sr-head"><b>${matches.length}</b> box(es) matching "<b>${escapeHtml(query)}</b>"</div>${items}`;
+}
+
+function highlight(dimensions, normQuery) {
+  const norm = normalize(dimensions);
+  const at = norm.indexOf(normQuery);
+  if (at < 0) return escapeHtml(dimensions);
+  let oStart = -1, oEnd = -1, seen = 0;
+  for (let i = 0; i < dimensions.length; i++) {
+    if (/\s/.test(dimensions[i])) continue;
+    if (seen === at) oStart = i;
+    if (seen === at + normQuery.length - 1) { oEnd = i; break; }
+    seen++;
+  }
+  if (oStart < 0 || oEnd < 0) return escapeHtml(dimensions);
+  return escapeHtml(dimensions.slice(0, oStart))
+    + '<mark>' + escapeHtml(dimensions.slice(oStart, oEnd + 1)) + '</mark>'
+    + escapeHtml(dimensions.slice(oEnd + 1));
+}
+
+// ---- Reorder / restock warnings ---------------------------------------
+function renderReorder() {
+  const banner = document.getElementById('reorderBanner');
+  const low = state.boxTypes.filter(isLow);
+  if (low.length === 0) { banner.innerHTML = ''; return; }
+  const items = low.map(t => {
+    const total = totalForType(t.id);
+    const word = total === 0 ? 'OUT OF STOCK' : `${total} left`;
+    return `<li><b>${escapeHtml(typeLabel(t))}</b>
+      — ${word}, at or below reorder level of ${t.reorderAt}</li>`;
+  }).join('');
+  banner.innerHTML = `<div class="reorder">
+    <div class="reorder-title">⚠️ Recommended reorder / restock — ${low.length} item(s)</div>
+    <ul>${items}</ul>
+  </div>`;
+}
+
+function escapeHtml(s) {
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g,
+    c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// ---- Render ------------------------------------------------------------
+function render() {
+  const container = document.getElementById('areas');
+  container.innerHTML = '';
+
+  if (state.areas.length === 0) {
+    container.innerHTML = `<div class="area-card"><div class="empty">No areas yet. Add one on the Add / Manage tab.</div></div>`;
+  } else {
+    for (const area of state.areas) {
+      const typesPresent = state.boxTypes.filter(t => getQty(area.id, t.id) > 0).length;
+      const totalBoxes = state.boxTypes.reduce((sum, t) => sum + getQty(area.id, t.id), 0);
+      const card = document.createElement('div');
+      card.className = 'area-card';
+
+      const rows = [...state.boxTypes].sort(byLength).map(t => {
+        const qty = getQty(area.id, t.id);
+        return `<tr>
+          <td><span class="dim-label">${escapeHtml(typeLabel(t))}</span>${isLow(t) ? `<span class="low">reorder</span>` : ''}</td>
+          <td>
+            <div class="qty-cell">
+              <button class="tiny" data-act="dec" data-area="${area.id}" data-type="${t.id}">−</button>
+              <span class="qty-val">${qty}</span>
+              <button class="tiny" data-act="inc" data-area="${area.id}" data-type="${t.id}">+</button>
+            </div>
+          </td>
+          <td class="col-right">
+            <button class="link" data-act="del-type" data-type="${t.id}">delete size</button>
+          </td>
+        </tr>`;
+      }).join('');
+
+      card.innerHTML = `
+        <div class="area-head">
+          <div>
+            <h2>${escapeHtml(area.name)}</h2>
+            <div class="area-stats"><b>${typesPresent}</b> box size(s) here · <b>${totalBoxes}</b> boxes total</div>
+          </div>
+          <button class="link" data-act="del-area" data-area="${area.id}">delete area</button>
+        </div>
+        ${state.boxTypes.length === 0
+          ? `<div class="empty">No box sizes yet. Add one on the Add / Manage tab.</div>`
+          : `<table>
+              <tr><th>Box (dimensions)</th><th>Quantity</th><th></th></tr>
+              ${rows}
+            </table>`}
+      `;
+      container.appendChild(card);
+    }
+  }
+
+  renderReorder();
+  const si = document.getElementById('search');
+  if (si && si.value) renderSearch(si.value);
+}
+
+// ---- Events ------------------------------------------------------------
+document.getElementById('addArea').onclick = addArea;
+document.getElementById('addType').onclick = addType;
+document.getElementById('refresh').onclick = refresh;
+
+const searchInput = document.getElementById('search');
+searchInput.addEventListener('input', () => renderSearch(searchInput.value));
+
+document.querySelector('.tabs').addEventListener('click', (e) => {
+  const tab = e.target.closest('.tab');
+  if (!tab) return;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.hidden = (p.id !== 'tab-' + tab.dataset.tab);
+  });
+});
+
+document.getElementById('areas').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const areaId = Number(btn.dataset.area);
+  const typeId = Number(btn.dataset.type);
+  if (act === 'inc') adjustQty(areaId, typeId, 1);
+  else if (act === 'dec') adjustQty(areaId, typeId, -1);
+  else if (act === 'del-area') deleteArea(areaId);
+  else if (act === 'del-type') deleteType(typeId);
+});
+
+// ---- Boot + background sync -------------------------------------------
+refresh();
+// Pull in other people's changes every 20s (skip while we're mid-save).
+setInterval(() => { if (savingCount === 0) refresh(); }, 20000);
+</script>
+</body>
+</html>
