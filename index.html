@@ -301,35 +301,15 @@ function highlightParts(t, parts) {
   ).join(' × ');
 }
 
+// Compact status line — the area tables below now show only the matching boxes.
 function renderSearch() {
   const panel = document.getElementById('searchResults');
   const parts = searchParts();
   if (parts.every(p => p === '')) { panel.innerHTML = ''; return; }
 
   const pattern = parts.map(p => p === '' ? 'any' : escapeHtml(p)).join(' × ');
-  const matches = state.boxTypes.filter(t => matchesParts(t, parts)).sort(byLength);
-
-  if (matches.length === 0) {
-    panel.innerHTML = `<div class="sr-head">No boxes match <b>${pattern}</b>.</div>`;
-    return;
-  }
-
-  const items = matches.map(t => {
-    const locations = state.areas
-      .map(a => ({ name: a.name, qty: getQty(a.id, t.id) }))
-      .filter(l => l.qty > 0);
-    const total = locations.reduce((s, l) => s + l.qty, 0);
-    const loc = locations.length
-      ? `<div class="sr-loc">${total} total — ${locations.map(l => `${escapeHtml(l.name)}: <b>${l.qty}</b>`).join(' · ')}</div>`
-      : `<div class="sr-loc none">Not currently in any area.</div>`;
-    return `<div class="sr-item">
-      <span class="sr-name">${highlightParts(t, parts)}</span>
-      ${isLow(t) ? `<span class="low">reorder</span>` : ''}
-      ${loc}
-    </div>`;
-  }).join('');
-
-  panel.innerHTML = `<div class="sr-head"><b>${matches.length}</b> box(es) matching <b>${pattern}</b></div>${items}`;
+  const n = state.boxTypes.filter(t => matchesParts(t, parts)).length;
+  panel.innerHTML = `<div class="sr-head">Showing <b>${n}</b> box size(s) matching <b>${pattern}</b> — use <b>Clear</b> to show all.</div>`;
 }
 
 // ---- Reorder / restock warnings ---------------------------------------
@@ -359,6 +339,13 @@ function render() {
   const container = document.getElementById('areas');
   container.innerHTML = '';
 
+  // When a search is active, show ONLY the box sizes that fit it.
+  const parts = searchParts();
+  const searching = parts.some(p => p !== '');
+  const visibleTypes = (searching
+    ? state.boxTypes.filter(t => matchesParts(t, parts))
+    : [...state.boxTypes]).sort(byLength);
+
   if (state.areas.length === 0) {
     container.innerHTML = `<div class="area-card"><div class="empty">No areas yet. Add one on the Add / Manage tab.</div></div>`;
   } else {
@@ -368,7 +355,7 @@ function render() {
       const card = document.createElement('div');
       card.className = 'area-card';
 
-      const rows = [...state.boxTypes].sort(byLength).map(t => {
+      const rows = visibleTypes.map(t => {
         const qty = getQty(area.id, t.id);
         return `<tr>
           <td><span class="dim-label">${escapeHtml(typeLabel(t))}</span>${isLow(t) ? `<span class="low">reorder</span>` : ''}</td>
@@ -393,8 +380,8 @@ function render() {
           </div>
           <button class="link" data-act="del-area" data-area="${area.id}">delete area</button>
         </div>
-        ${state.boxTypes.length === 0
-          ? `<div class="empty">No box sizes yet. Add one on the Add / Manage tab.</div>`
+        ${visibleTypes.length === 0
+          ? `<div class="empty">${searching ? 'No box sizes match your search.' : 'No box sizes yet. Add one on the Add / Manage tab.'}</div>`
           : `<table>
               <tr><th>Box (dimensions)</th><th>Quantity</th><th></th></tr>
               ${rows}
@@ -416,7 +403,7 @@ document.getElementById('refresh').onclick = refresh;
 // Three dimension search fields: re-search on input; space jumps to next field.
 const searchFields = ['search-l', 'search-w', 'search-h'].map(id => document.getElementById(id));
 searchFields.forEach((field, i) => {
-  field.addEventListener('input', renderSearch);
+  field.addEventListener('input', render);     // re-render filters the tables live
   field.addEventListener('keydown', (e) => {
     if (e.key === ' ' || e.code === 'Space') {
       e.preventDefault();                       // don't type a space
@@ -427,7 +414,7 @@ searchFields.forEach((field, i) => {
 });
 document.getElementById('search-clear').onclick = () => {
   searchFields.forEach(f => { f.value = ''; });
-  renderSearch();
+  render();
   searchFields[0].focus();
 };
 
