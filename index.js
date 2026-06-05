@@ -70,6 +70,9 @@ async function ensureSchema() {
     );
   `);
 
+  // Optional barcode for scanning. Safe to re-run (no-op if it already exists).
+  await pool.query(`ALTER TABLE box_types ADD COLUMN IF NOT EXISTS barcode TEXT`);
+
   const { rows: a } = await pool.query('SELECT count(*)::int AS n FROM box_areas');
   if (a[0].n === 0) {
     for (const name of SEED_AREAS) {
@@ -108,7 +111,7 @@ function cleanInt(v) {
 async function getState() {
   const [areas, types, inv] = await Promise.all([
     pool.query('SELECT id, name FROM box_areas ORDER BY id'),
-    pool.query('SELECT id, dimensions, reorder_at AS "reorderAt" FROM box_types ORDER BY id'),
+    pool.query('SELECT id, dimensions, reorder_at AS "reorderAt", barcode FROM box_types ORDER BY id'),
     pool.query('SELECT area_id, type_id, quantity FROM box_inventory'),
   ]);
   const inventory = {};
@@ -181,16 +184,72 @@ async function deleteType(id) {
 }
 
 // =================================================================
+// Scanning
+// =================================================================
+
+// Look up a box by a scanned code. Matches the box's assigned barcode OR its
+// dimensions text (so a barcode printed of "12x6x6" works with no setup).
+// Returns the box plus its current stock at EVERY area.
+async function lookupBarcode(code) {
+  const c = String(code || '').trim();
+  if (!c) return { found: false, code: c };
+  const norm = c.toLowerCase();
+  const { rows } = await pool.query(
+    `SELECT id, dimensions, barcode, reorder_at AS "reorderAt"
+       FROM box_types
+      WHERE lower(coalesce(barcode, '')) = $1 OR lower(dimensions) = $1
+      ORDER BY id LIMIT 1`,
+    [norm]
+  );
+  if (!rows.length) return { found: false, code: c };
+  const t = rows[0];
+  const { rows: areas } = await pool.query(
+    `SELECT a.id, a.name, coalesce(i.quantity, 0) AS qty
+       FROM box_areas a
+       LEFT JOIN box_inventory i ON i.area_id = a.id AND i.type_id = $1
+      ORDER BY a.id`,
+    [t.id]
+  );
+  const locs = areas.map(r => ({ id: r.id, name: r.name, qty: Number(r.qty) }));
+  return {
+    found: true,
+    type: t,
+    areas: locs,
+    total: locs.reduce((s, r) => s + r.qty, 0),
+  };
+}
+
+// Link a scanned barcode to an existing box (one-time, for boxes whose own
+// printed barcode you want to use). Barcodes must be unique across boxes.
+async function setBarcode(typeId, barcode) {
+  const t = cleanInt(typeId);
+  if (t === null) return { error: 'Bad box id' };
+  const bc = String(barcode || '').trim();
+  if (!bc) return { error: 'Barcode is required' };
+  const dup = await pool.query(
+    `SELECT id FROM box_types WHERE lower(barcode) = lower($1) AND id <> $2`, [bc, t]
+  );
+  if (dup.rows.length) return { error: 'That barcode is already linked to another box' };
+  const { rowCount } = await pool.query(`UPDATE box_types SET barcode = $1 WHERE id = $2`, [bc, t]);
+  if (!rowCount) return { error: 'Box not found' };
+  return { ok: true };
+}
+
+// =================================================================
 // HTTP server
 // =================================================================
 
 const app = express();
 app.use(express.json({ limit: '64kb' }));
 
-app.get('/', (req, res) => {
+function sendPage(res, file) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
+  res.sendFile(path.join(__dirname, file));
+}
+
+app.get('/', (req, res) => sendPage(res, 'index.html'));
+app.get('/scan', (req, res) => sendPage(res, 'scan.html'));      // barcode scanning screen
+app.get('/labels', (req, res) => sendPage(res, 'labels.html'));  // printable barcodes
 
 app.get('/health', (req, res) => res.json({ ok: true, app: 'asp-box-tracker' }));
 
@@ -206,6 +265,8 @@ app.post('/api', async (req, res) => {
       case 'addType':    out = await addType(body.dimensions, body.reorderAt); break;
       case 'deleteArea': out = await deleteArea(body.id); break;
       case 'deleteType': out = await deleteType(body.id); break;
+      case 'lookupBarcode': out = await lookupBarcode(body.code); break;
+      case 'setBarcode':    out = await setBarcode(body.typeId, body.barcode); break;
       default:           out = { error: 'Unknown action: ' + body.action };
     }
     res.json(out);

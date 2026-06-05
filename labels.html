@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASP Box Tracker — Barcode Labels</title>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<style>
+  :root { --bg:#f4f5f7; --ink:#1d2433; --muted:#6b7280; --line:#e5e7eb; --accent:#1e3a8a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--accent); color:#fff; padding:16px 24px; display:flex; align-items:center; justify-content:space-between; }
+  header h1 { margin:0; font-size:20px; }
+  header a { color:#c7d2fe; text-decoration:none; font-size:14px; }
+  .bar { max-width:1000px; margin:0 auto; padding:18px 24px; display:flex; gap:12px; align-items:center; }
+  .bar p { margin:0; color:var(--muted); font-size:14px; }
+  button { font:inherit; cursor:pointer; border:1px solid var(--accent); background:var(--accent); color:#fff; padding:9px 16px; border-radius:9px; font-weight:600; }
+  .grid { max-width:1000px; margin:0 auto; padding:0 24px 40px; display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .label { background:#fff; border:1px solid var(--line); border-radius:10px; padding:14px; text-align:center; }
+  .label .dims { font-size:18px; font-weight:700; margin-bottom:6px; }
+  .label svg { max-width:100%; height:auto; }
+  .note { max-width:1000px; margin:0 auto 10px; padding:0 24px; color:var(--muted); font-size:13px; }
+  @media print {
+    header, .bar { display:none; }
+    body { background:#fff; }
+    .grid { grid-template-columns:repeat(3,1fr); gap:10px; padding:0; }
+    .label { border:1px dashed #bbb; break-inside:avoid; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏷️ Box Barcode Labels</h1>
+  <a href="/">← Tracker</a>
+</header>
+<div class="bar">
+  <button onclick="window.print()">🖨️ Print</button>
+  <p>Print, cut out, and stick one on each box bin. Scanning a label opens it on the Scan screen.</p>
+</div>
+<div class="note" id="note"></div>
+<div class="grid" id="grid"></div>
+
+<script>
+async function api(action, payload) {
+  const res = await fetch('/api', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ action, ...(payload||{}) }) });
+  return res.json();
+}
+function escapeHtml(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+(async () => {
+  const grid = document.getElementById('grid');
+  const note = document.getElementById('note');
+  let s;
+  try { s = await api('getState'); } catch (e) { note.textContent = 'Could not load boxes: ' + e; return; }
+  const boxes = (s.boxTypes || []).slice()
+    .sort((a,b) => (a.dimensions||'').localeCompare(b.dimensions||''));
+  if (!boxes.length) { note.textContent = 'No boxes yet.'; return; }
+
+  // The label encodes the box's assigned barcode if it has one, otherwise its
+  // dimensions text — which the Scan screen also matches, so no setup needed.
+  boxes.forEach((t, i) => {
+    const value = (t.barcode && t.barcode.trim()) ? t.barcode.trim() : t.dimensions;
+    const cell = document.createElement('div');
+    cell.className = 'label';
+    cell.innerHTML = `<div class="dims">${escapeHtml(t.dimensions)}</div><svg id="bc${i}"></svg>`;
+    grid.appendChild(cell);
+    try {
+      JsBarcode('#bc' + i, value, { format: 'CODE128', displayValue: true, fontSize: 14, height: 50, margin: 6 });
+    } catch (e) {
+      cell.innerHTML += `<div style="color:#dc2626;font-size:12px;">barcode error</div>`;
+    }
+  });
+  note.textContent = boxes.length + ' box size(s). Each label encodes ' +
+    'its own barcode (if linked) or its dimensions.';
+})();
+</script>
+</body>
+</html>

@@ -39,6 +39,8 @@
   .dot { width: 9px; height: 9px; border-radius: 50%; background: #9ca3af; }
   .dot.ok { background: #16a34a; }
   .dot.err { background: var(--danger); }
+  .navlink { color: var(--accent); text-decoration: none; font-weight: 600; font-size: 13px; padding: 4px 6px; }
+  .navlink:hover { text-decoration: underline; }
 
   button {
     font: inherit; cursor: pointer;
@@ -134,7 +136,9 @@
   <div class="statusbar">
     <span class="dot" id="dot"></span>
     <span id="statusText">Loading…</span>
-    <button class="tiny" id="refresh" style="margin-left:auto;">Refresh</button>
+    <a class="navlink" href="/scan" style="margin-left:auto;">📷 Scan</a>
+    <a class="navlink" href="/labels">🏷️ Labels</a>
+    <button class="tiny" id="refresh">Refresh</button>
   </div>
 
   <div class="tabs">
