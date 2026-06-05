@@ -128,6 +128,41 @@
   .col-right { text-align: right; }
   .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
   .hint { color: var(--muted); font-size: 13px; margin-top: 28px; }
+
+  /* ---- Small rugged handheld screens (e.g. Chainway C61, ~4") ---- */
+  @media (max-width: 560px) {
+    header { padding: 12px 14px; }
+    header h1 { font-size: 18px; }
+    header p { font-size: 12px; }
+    main { padding: 12px; }
+
+    .statusbar { flex-wrap: wrap; gap: 8px 10px; font-size: 12px; }
+    .statusbar .navlink { padding: 4px 2px; }
+
+    .tabs { margin-bottom: 16px; }
+    .tab { padding: 10px 12px; font-size: 15px; }
+
+    /* L × W × H fits one line: fields flex to share the width */
+    .dim-search { gap: 6px; padding: 10px; }
+    .dim-search .mag { display: none; }
+    .dim-field { width: auto; flex: 1 1 0; min-width: 0; font-size: 22px; padding: 12px 4px; }
+    .dim-search .x { font-size: 18px; }
+    #search-clear { flex: 0 0 auto; padding: 10px 12px; }
+    .search-hint { font-size: 12px; }
+
+    .area-head { padding: 13px 14px; }
+    .area-head h2 { font-size: 16px; }
+    th, td { padding: 10px 12px; }
+    th { font-size: 11px; }
+
+    /* Big, finger-friendly Drop / Add */
+    .qty-cell { gap: 10px; }
+    .qbtn { padding: 13px 18px; font-size: 16px; min-height: 46px; }
+    .qty-val { font-size: 24px; min-width: 40px; }
+
+    .reorder ul { padding-left: 18px; }
+    .sr-head { font-size: 12px; }
+  }
 </style>
 </head>
 <body>

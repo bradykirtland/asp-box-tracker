@@ -72,6 +72,24 @@
   .unknown code { background: var(--bg); padding: 2px 7px; border-radius: 5px; }
   .unknown select { font: inherit; font-size: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
   .placeholder { color: var(--muted); text-align: center; padding: 50px 0; font-size: 16px; }
+
+  /* ---- Small rugged handheld screens (e.g. Chainway C61, ~4") ---- */
+  @media (max-width: 560px) {
+    header { padding: 12px 14px; }
+    header h1 { font-size: 18px; }
+    main { padding: 12px; }
+    .scan-box { padding: 12px 14px; }
+    #code { font-size: 22px; padding: 12px 14px; }
+    .box-head { padding: 14px 16px; }
+    .box-dims { font-size: 30px; }
+    .loc { padding: 14px 16px; }
+    .loc-qty { font-size: 42px; }
+    .loc-controls { gap: 8px; }
+    button { padding: 12px 16px; min-height: 46px; }
+    .take-amt { width: 56px; font-size: 18px; min-height: 46px; }
+    .unknown { padding: 16px; }
+    .unknown select { width: 100%; }
+  }
 </style>
 </head>
 <body>
