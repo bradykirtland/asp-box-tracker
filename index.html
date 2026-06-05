@@ -118,8 +118,12 @@
   th, td { text-align: left; padding: 10px 18px; font-size: 14px; }
   th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   tr + tr td { border-top: 1px solid var(--line); }
-  .qty-cell { display: flex; align-items: center; gap: 8px; }
-  .qty-val { min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .qty-cell { display: flex; align-items: center; gap: 10px; }
+  .qty-val { min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; font-size: 18px; }
+  .qbtn { font-weight: 700; padding: 7px 16px; border-radius: 8px; color: #fff; }
+  .qbtn.drop { background: var(--danger); border-color: var(--danger); }
+  .qbtn.add { background: #16a34a; border-color: #16a34a; }
+  .qbtn:active { transform: translateY(1px); }
   .empty { padding: 24px 18px; color: var(--muted); font-size: 14px; text-align: center; }
   .col-right { text-align: right; }
   .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
@@ -364,9 +368,9 @@ function render() {
           <td><span class="dim-label">${escapeHtml(typeLabel(t))}</span>${isLow(t) ? `<span class="low">reorder</span>` : ''}</td>
           <td>
             <div class="qty-cell">
-              <button class="tiny" data-act="dec" data-area="${area.id}" data-type="${t.id}">−</button>
+              <button class="qbtn drop" data-act="dec" data-area="${area.id}" data-type="${t.id}">Drop</button>
               <span class="qty-val">${qty}</span>
-              <button class="tiny" data-act="inc" data-area="${area.id}" data-type="${t.id}">+</button>
+              <button class="qbtn add" data-act="inc" data-area="${area.id}" data-type="${t.id}">Add</button>
             </div>
           </td>
         </tr>`;
@@ -439,6 +443,46 @@ document.getElementById('areas').addEventListener('click', (e) => {
   else if (act === 'del-area') deleteArea(areaId);
   else if (act === 'del-type') deleteType(typeId);
 });
+
+// ---- Scan anywhere on this page ---------------------------------------
+// A USB/Bluetooth barcode scanner types the code very fast and ends with
+// Enter. We watch keystrokes globally: a fast burst followed by Enter is
+// treated as a scan, looked up, and used to fill the L × W × H search.
+let scanBuf = '';
+let lastKey = 0;
+document.addEventListener('keydown', (e) => {
+  const now = Date.now();
+  if (e.key === 'Enter') {
+    if (scanBuf.length >= 3) { e.preventDefault(); handleScan(scanBuf); }
+    scanBuf = '';
+    return;
+  }
+  if (e.key.length === 1) {
+    if (now - lastKey > 50) scanBuf = '';   // slow gap → not part of a scan burst
+    scanBuf += e.key;
+    lastKey = now;
+  }
+});
+
+async function handleScan(code) {
+  try {
+    const res = await api('lookupBarcode', { code });
+    if (!res.found) {
+      setStatus('err', `Scanned "${code}" — no box linked. Open 📷 Scan to link it.`);
+      return;
+    }
+    // Fill the L × W × H search with the box's dimensions → filters to it.
+    const p = (res.type.dimensions || '').split(/[^0-9.]+/).filter(Boolean);
+    document.getElementById('search-l').value = p[0] || '';
+    document.getElementById('search-w').value = p[1] || '';
+    document.getElementById('search-h').value = p[2] || '';
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    render();                                   // shows the box with Add / Drop
+    setStatus('ok', `Scanned ${res.type.dimensions} — Add or Drop below.`);
+  } catch (e) {
+    setStatus('err', 'Scan lookup failed: ' + e.message);
+  }
+}
 
 // ---- Boot + background sync -------------------------------------------
 refresh();
