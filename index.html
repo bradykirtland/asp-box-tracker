@@ -137,6 +137,10 @@
 </header>
 
 <main>
+  <!-- Hidden catcher: stays focused so a scan is captured the instant the page
+       opens — no tapping a field first. inputmode=none avoids the on-screen keyboard. -->
+  <input id="scanCapture" inputmode="none" autocomplete="off"
+         style="position:fixed; top:-200px; left:0; width:1px; height:1px; opacity:0;">
   <div class="statusbar">
     <span class="dot" id="dot"></span>
     <span id="statusText">Loading…</span>
@@ -442,26 +446,32 @@ document.getElementById('areas').addEventListener('click', (e) => {
   else if (act === 'dec') adjustQty(areaId, typeId, -1);
   else if (act === 'del-area') deleteArea(areaId);
   else if (act === 'del-type') deleteType(typeId);
+  focusScan();   // back to the catcher so the next scan works
 });
 
 // ---- Scan anywhere on this page ---------------------------------------
-// A USB/Bluetooth barcode scanner types the code very fast and ends with
-// Enter. We watch keystrokes globally: a fast burst followed by Enter is
-// treated as a scan, looked up, and used to fill the L × W × H search.
-let scanBuf = '';
-let lastKey = 0;
-document.addEventListener('keydown', (e) => {
-  const now = Date.now();
+// A hidden input stays focused and catches the scanner's keystrokes (which end
+// in Enter). The whole code lands there, gets looked up, and fills ALL THREE
+// L × W × H boxes — so you never tap a field and every box populates.
+const scanCapture = document.getElementById('scanCapture');
+function focusScan() { try { scanCapture.focus({ preventScroll: true }); } catch (e) {} }
+
+scanCapture.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
-    if (scanBuf.length >= 3) { e.preventDefault(); handleScan(scanBuf); }
-    scanBuf = '';
-    return;
+    e.preventDefault();
+    const code = scanCapture.value.trim();
+    scanCapture.value = '';
+    if (code) handleScan(code);
   }
-  if (e.key.length === 1) {
-    if (now - lastKey > 50) scanBuf = '';   // slow gap → not part of a scan burst
-    scanBuf += e.key;
-    lastKey = now;
-  }
+});
+// If focus falls to nowhere, grab it back so the next scan still lands here.
+scanCapture.addEventListener('blur', () => setTimeout(() => {
+  const a = document.activeElement;
+  if (!a || a === document.body) focusScan();
+}, 80));
+// Tapping empty space returns focus to the catcher (but not while using a field/button).
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('input, select, button, a, textarea')) focusScan();
 });
 
 async function handleScan(code) {
@@ -469,23 +479,25 @@ async function handleScan(code) {
     const res = await api('lookupBarcode', { code });
     if (!res.found) {
       setStatus('err', `Scanned "${code}" — no box linked. Open 📷 Scan to link it.`);
+      focusScan();
       return;
     }
-    // Fill the L × W × H search with the box's dimensions → filters to it.
+    // Split the box's dimensions into the three boxes (e.g. 12x6x6 → 12, 6, 6).
     const p = (res.type.dimensions || '').split(/[^0-9.]+/).filter(Boolean);
     document.getElementById('search-l').value = p[0] || '';
     document.getElementById('search-w').value = p[1] || '';
     document.getElementById('search-h').value = p[2] || '';
-    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    render();                                   // shows the box with Add / Drop
-    setStatus('ok', `Scanned ${res.type.dimensions} — Add or Drop below.`);
+    render();                                   // shows the box with Drop / Add
+    setStatus('ok', `Scanned ${res.type.dimensions} — Drop or Add below.`);
   } catch (e) {
     setStatus('err', 'Scan lookup failed: ' + e.message);
   }
+  focusScan();                                  // ready for the next scan
 }
 
 // ---- Boot + background sync -------------------------------------------
 refresh();
+focusScan();   // ready to scan the instant the page opens — no tap needed
 // Pull in other people's changes every 20s (skip while we're mid-save).
 setInterval(() => { if (savingCount === 0) refresh(); }, 20000);
 </script>
