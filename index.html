@@ -141,6 +141,19 @@
   .modal-label input, .modal-label select { width: 100%; font: inherit; font-size: 16px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; margin-top: 4px; }
   .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
   .modal-actions .primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+
+  /* Scan-result popup */
+  .scan-card { max-width: 420px; text-align: center; }
+  .scan-dims { font-size: 40px; font-weight: 800; margin: 2px 0; }
+  .scan-total { color: var(--muted); font-size: 14px; margin-bottom: 14px; }
+  .scan-stations { display: grid; gap: 12px; margin-bottom: 8px; text-align: left; }
+  .scan-station { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .scan-station.matched { border-color: #16a34a; background: #ecfdf5; }
+  .scan-station-name { font-weight: 600; font-size: 14px; margin-bottom: 10px; }
+  .scan-station-name .here { color: #16a34a; font-weight: 700; }
+  .scan-station-row { display: flex; align-items: center; gap: 14px; }
+  .scan-card .modal-actions { justify-content: center; margin-top: 8px; }
+  .scan-card .modal-actions .primary { padding: 13px 30px; font-size: 16px; }
   .qbtn { font-weight: 700; padding: 7px 16px; border-radius: 8px; color: #fff; }
   .qbtn.drop { background: var(--danger); border-color: var(--danger); }
   .qbtn.add { background: #16a34a; border-color: #16a34a; }
@@ -264,6 +277,16 @@
       <div class="modal-actions">
         <button id="bcCancel">Cancel</button>
         <button id="bcSave" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scan-result popup: shows the scanned box + Drop/Add, stays until Done -->
+  <div id="scanModal" class="modal" hidden>
+    <div class="modal-card scan-card">
+      <div id="scanModalBody"></div>
+      <div class="modal-actions">
+        <button id="scanDone" class="primary">Done</button>
       </div>
     </div>
   </div>
@@ -489,6 +512,7 @@ function render() {
 
   renderReorder();
   renderSearch();
+  renderScanPopup();
 }
 
 // ---- Events ------------------------------------------------------------
@@ -544,6 +568,7 @@ document.getElementById('areas').addEventListener('click', (e) => {
 // ---- Barcode assign / change modal ------------------------------------
 const bcModal = document.getElementById('bcModal');
 function openBarcodeModal({ code = '', typeId = null, areaId = null }) {
+  if (scanPopupOpen) closeScanPopup();   // don't stack on top of the scan popup
   modalOpen = true;
   const boxSel = document.getElementById('bcBox');
   const areaSel = document.getElementById('bcArea');
@@ -585,6 +610,57 @@ document.getElementById('bcValue').addEventListener('keydown', (e) => {
 });
 bcModal.addEventListener('click', (e) => { if (e.target === bcModal) closeBarcodeModal(); });
 
+// ---- Scan-result popup -------------------------------------------------
+const scanModal = document.getElementById('scanModal');
+let scanPopupOpen = false, scanPopupTypeId = null, scanPopupAreaId = null;
+
+function openScanPopup(typeId, matchedAreaId) {
+  scanPopupTypeId = typeId;
+  scanPopupAreaId = matchedAreaId || null;
+  scanPopupOpen = true;
+  renderScanPopup();
+  scanModal.hidden = false;
+  focusScan();   // keep catching scans so the next scan updates the popup
+}
+function closeScanPopup() {
+  scanPopupOpen = false;
+  scanModal.hidden = true;
+  scanPopupTypeId = null; scanPopupAreaId = null;
+  focusScan();
+}
+function renderScanPopup() {
+  if (!scanPopupOpen) return;
+  const t = state.boxTypes.find(x => x.id === scanPopupTypeId);
+  if (!t) { closeScanPopup(); return; }
+  const stations = state.areas.map(a => {
+    const matched = a.id === scanPopupAreaId;
+    return `<div class="scan-station${matched ? ' matched' : ''}">
+      <div class="scan-station-name">${escapeHtml(a.name)}${matched ? ' <span class="here">· scanned here</span>' : ''}</div>
+      <div class="scan-station-row">
+        <button class="qbtn drop" data-act="dec" data-area="${a.id}" data-type="${t.id}">Drop</button>
+        <span class="qty-val">${getQty(a.id, t.id)}</span>
+        <button class="qbtn add" data-act="inc" data-area="${a.id}" data-type="${t.id}">Add</button>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('scanModalBody').innerHTML = `
+    <h3 class="scan-dims">${escapeHtml(typeLabel(t))}</h3>
+    <div class="scan-total">${totalForType(t.id)} in stock total</div>
+    <div class="scan-stations">${stations}</div>`;
+}
+scanModal.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (btn) {
+    const areaId = Number(btn.dataset.area), typeId = Number(btn.dataset.type);
+    if (btn.dataset.act === 'dec') adjustQty(areaId, typeId, -1);
+    else if (btn.dataset.act === 'inc') adjustQty(areaId, typeId, 1);
+    focusScan();
+    return;
+  }
+  if (e.target === scanModal) closeScanPopup();   // tap outside the card to close
+});
+document.getElementById('scanDone').onclick = closeScanPopup;
+
 // ---- Scan anywhere on this page ---------------------------------------
 // A hidden input stays focused and catches the scanner's keystrokes (which end
 // in Enter). The whole code lands there, gets looked up, and fills ALL THREE
@@ -612,7 +688,7 @@ document.addEventListener('click', (e) => {
 });
 
 async function handleScan(code) {
-  if (modalOpen) return;
+  if (modalOpen) return;   // the assign modal blocks scanning
   try {
     const res = await api('lookupBarcode', { code });
     if (!res.found) {
@@ -620,24 +696,18 @@ async function handleScan(code) {
       openBarcodeModal({ code });
       return;
     }
-    // Split the box's dimensions into the three boxes (e.g. 12x6x6 → 12, 6, 6).
-    const p = (res.type.dimensions || '').split(/[^0-9.]+/).filter(Boolean);
-    document.getElementById('search-l').value = p[0] || '';
-    document.getElementById('search-w').value = p[1] || '';
-    document.getElementById('search-h').value = p[2] || '';
-    scanMatchTypeId = res.type.id;
-    scanMatchAreaId = res.matchedAreaId || null;   // highlight that station, if known
-    render();
+    // Pop up the box with Drop/Add; it stays until the user taps Done.
+    openScanPopup(res.type.id, res.matchedAreaId);
     if (res.matchedAreaId) {
       const a = (res.areas || []).find(x => x.id === res.matchedAreaId);
-      setStatus('ok', `Scanned ${res.type.dimensions} @ ${a ? a.name : ''} — Drop or Add.`);
+      setStatus('ok', `Scanned ${res.type.dimensions} @ ${a ? a.name : ''}`);
     } else {
-      setStatus('ok', `Scanned ${res.type.dimensions} — Drop or Add below.`);
+      setStatus('ok', `Scanned ${res.type.dimensions}`);
     }
   } catch (e) {
     setStatus('err', 'Scan lookup failed: ' + e.message);
   }
-  focusScan();                                  // ready for the next scan
+  focusScan();                                  // keep catching the next scan
 }
 
 // ---- Boot + background sync -------------------------------------------
