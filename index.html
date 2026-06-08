@@ -684,16 +684,12 @@ document.getElementById('scanDone').onclick = closeScanPopup;
 function boxAreaArea() { return state.areas.find(a => /box\s*area/i.test(a.name)); }
 function loadingDockArea() { return state.areas.find(a => /loading\s*dock/i.test(a.name)); }
 
-// A "Drop" (take). From the Box Area it counts down silently while stock
-// remains; only when a take would push the Box Area below 0 does it prompt
-// (asking whether those boxes are going to the Loading Dock).
+// A "Drop" (take). From the Box Area it asks whether those boxes are going to
+// the Loading Dock; from any other station it just removes one.
 function dropFrom(areaId, typeId) {
   const ba = boxAreaArea(), ld = loadingDockArea();
-  if (ba && ld && areaId === ba.id && getQty(ba.id, typeId) - 1 < 0) {
-    openTransferDialog(typeId, ba, ld);
-  } else {
-    adjustQty(areaId, typeId, -1);
-  }
+  if (ba && ld && areaId === ba.id) openTransferDialog(typeId, ba, ld);
+  else adjustQty(areaId, typeId, -1);
 }
 
 const transferModal = document.getElementById('transferModal');
@@ -717,14 +713,15 @@ async function applyTransfer(move) {
   const { typeId, ba, ld } = tfCtx;
   let qty = parseInt(document.getElementById('tfQty').value, 10);
   if (!Number.isInteger(qty) || qty < 1) qty = 1;
+  const moved = Math.min(qty, getQty(ba.id, typeId));   // never move more than is there
   closeTransfer();
-  // This fires on an over-draw, so use the requested qty (Box Area floors at 0).
-  await adjustQty(ba.id, typeId, -qty);
+  if (moved <= 0) { setStatus('err', `${ba.name} is empty for that box.`); return; }
+  await adjustQty(ba.id, typeId, -moved);               // take out of Box Area
   if (move) {
-    await adjustQty(ld.id, typeId, qty);                // put them in the Loading Dock
-    setStatus('ok', `Moved ${qty} to ${ld.name}.`);
+    await adjustQty(ld.id, typeId, moved);              // ...and into the Loading Dock
+    setStatus('ok', `Moved ${moved} from ${ba.name} to ${ld.name}.`);
   } else {
-    setStatus('ok', `Removed ${qty} from ${ba.name}.`);
+    setStatus('ok', `Removed ${moved} from ${ba.name}.`);
   }
 }
 document.getElementById('tfYes').onclick = () => applyTransfer(true);
