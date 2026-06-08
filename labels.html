@@ -17,7 +17,8 @@
   button { font:inherit; cursor:pointer; border:1px solid var(--accent); background:var(--accent); color:#fff; padding:9px 16px; border-radius:9px; font-weight:600; }
   .grid { max-width:1000px; margin:0 auto; padding:0 24px 40px; display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
   .label { background:#fff; border:1px solid var(--line); border-radius:10px; padding:14px; text-align:center; }
-  .label .dims { font-size:18px; font-weight:700; margin-bottom:6px; }
+  .label .dims { font-size:18px; font-weight:700; margin-bottom:2px; }
+  .label .station { font-size:12px; color:var(--muted); margin-bottom:6px; }
   .label svg { max-width:100%; height:auto; }
   .note { max-width:1000px; margin:0 auto 10px; padding:0 24px; color:var(--muted); font-size:13px; }
   @media print {
@@ -35,7 +36,7 @@
 </header>
 <div class="bar">
   <button onclick="window.print()">🖨️ Print</button>
-  <p>Print, cut out, and stick one on each box bin. Scanning a label opens it on the Scan screen.</p>
+  <p>One label per box <b>per station</b>. Print, cut out, and stick each on its bin at that station. Scanning a label opens that box at that station.</p>
 </div>
 <div class="note" id="note"></div>
 <div class="grid" id="grid"></div>
@@ -47,32 +48,44 @@ async function api(action, payload) {
   return res.json();
 }
 function escapeHtml(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function boxLen(d){ const m=(d||'').match(/\d+(\.\d+)?/g); return m&&m.length?Number(m[0]):Infinity; }
 
 (async () => {
   const grid = document.getElementById('grid');
   const note = document.getElementById('note');
+  // Make sure every box×station has a barcode (generates the missing ones).
+  try { await api('ensureStationBarcodes'); } catch (e) {}
   let s;
   try { s = await api('getState'); } catch (e) { note.textContent = 'Could not load boxes: ' + e; return; }
-  const boxes = (s.boxTypes || []).slice()
-    .sort((a,b) => (a.dimensions||'').localeCompare(b.dimensions||''));
-  if (!boxes.length) { note.textContent = 'No boxes yet.'; return; }
 
-  // The label encodes the box's assigned barcode if it has one, otherwise its
-  // dimensions text — which the Scan screen also matches, so no setup needed.
-  boxes.forEach((t, i) => {
-    const value = (t.barcode && t.barcode.trim()) ? t.barcode.trim() : t.dimensions;
-    const cell = document.createElement('div');
-    cell.className = 'label';
-    cell.innerHTML = `<div class="dims">${escapeHtml(t.dimensions)}</div><svg id="bc${i}"></svg>`;
-    grid.appendChild(cell);
-    try {
-      JsBarcode('#bc' + i, value, { format: 'CODE128', displayValue: true, fontSize: 14, height: 50, margin: 6 });
-    } catch (e) {
-      cell.innerHTML += `<div style="color:#dc2626;font-size:12px;">barcode error</div>`;
-    }
+  const boxes = (s.boxTypes || []).slice().sort((a,b) => boxLen(a.dimensions) - boxLen(b.dimensions));
+  const areas = s.areas || [];
+  const bc = {};
+  (s.barcodes || []).forEach(b => { bc[b.typeId + ':' + b.areaId] = b.barcode; });
+  if (!boxes.length || !areas.length) { note.textContent = 'No boxes/areas yet.'; return; }
+
+  // One label per box per station, encoding that station's barcode.
+  let i = 0, count = 0;
+  boxes.forEach(t => {
+    areas.forEach(a => {
+      const value = bc[t.id + ':' + a.id];
+      if (!value) return;
+      const id = 'bc' + (i++);
+      const cell = document.createElement('div');
+      cell.className = 'label';
+      cell.innerHTML = `<div class="dims">${escapeHtml(t.dimensions)}</div>
+                        <div class="station">${escapeHtml(a.name)}</div>
+                        <svg id="${id}"></svg>`;
+      grid.appendChild(cell);
+      try {
+        JsBarcode('#' + id, value, { format: 'CODE128', displayValue: true, fontSize: 13, height: 48, margin: 6 });
+      } catch (e) {
+        cell.innerHTML += `<div style="color:#dc2626;font-size:12px;">barcode error</div>`;
+      }
+      count++;
+    });
   });
-  note.textContent = boxes.length + ' box size(s). Each label encodes ' +
-    'its own barcode (if linked) or its dimensions.';
+  note.textContent = count + ' labels — ' + boxes.length + ' box size(s) × ' + areas.length + ' station(s).';
 })();
 </script>
 </body>

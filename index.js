@@ -272,6 +272,21 @@ async function setStationBarcode(typeId, areaId, barcode) {
   return { ok: true };
 }
 
+// Ensure every box has a barcode at every station, generating a stable
+// "ASP-<box>-<station>" code for any pair that lacks one. The Labels page calls
+// this so there's a printable, scannable label per box per station. Existing
+// (e.g. manually linked) barcodes are left untouched.
+async function ensureStationBarcodes() {
+  await pool.query(`
+    INSERT INTO box_barcodes (barcode, type_id, area_id)
+    SELECT 'ASP-' || t.id || '-' || a.id, t.id, a.id
+      FROM box_types t CROSS JOIN box_areas a
+     WHERE NOT EXISTS (SELECT 1 FROM box_barcodes b WHERE b.type_id = t.id AND b.area_id = a.id)
+    ON CONFLICT (barcode) DO NOTHING
+  `);
+  return { ok: true };
+}
+
 // =================================================================
 // HTTP server
 // =================================================================
@@ -303,6 +318,7 @@ app.post('/api', async (req, res) => {
       case 'deleteType': out = await deleteType(body.id); break;
       case 'lookupBarcode':     out = await lookupBarcode(body.code); break;
       case 'setStationBarcode': out = await setStationBarcode(body.typeId, body.areaId, body.barcode); break;
+      case 'ensureStationBarcodes': out = await ensureStationBarcodes(); break;
       default:           out = { error: 'Unknown action: ' + body.action };
     }
     res.json(out);
