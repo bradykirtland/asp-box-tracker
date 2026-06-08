@@ -118,8 +118,29 @@
   th, td { text-align: left; padding: 10px 18px; font-size: 14px; }
   th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   tr + tr td { border-top: 1px solid var(--line); }
+  .box-list { padding: 4px 0; }
+  .box-row { padding: 14px 18px; }
+  .box-row + .box-row { border-top: 1px solid var(--line); }
+  .box-row.matched { background: #ecfdf5; box-shadow: inset 4px 0 0 #16a34a; }
+  .box-row-top { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .box-row-top .dim-label { font-size: 20px; font-weight: 700; }
+  .bc-btn { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--accent);
+            background: none; border: 1px solid var(--line); padding: 6px 10px; border-radius: 8px; white-space: nowrap; }
+  .bc-btn:hover { background: var(--accent-soft); }
+
   .qty-cell { display: flex; align-items: center; gap: 10px; }
   .qty-val { min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; font-size: 18px; }
+
+  /* Barcode assign modal */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50; }
+  .modal[hidden] { display: none; }
+  .modal-card { background: #fff; border-radius: 14px; padding: 18px; width: 100%; max-width: 380px; }
+  .modal-card h3 { margin: 0 0 4px; font-size: 18px; }
+  .modal-sub { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+  .modal-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+  .modal-label input, .modal-label select { width: 100%; font: inherit; font-size: 16px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; margin-top: 4px; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+  .modal-actions .primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
   .qbtn { font-weight: 700; padding: 7px 16px; border-radius: 8px; color: #fff; }
   .qbtn.drop { background: var(--danger); border-color: var(--danger); }
   .qbtn.add { background: #16a34a; border-color: #16a34a; }
@@ -152,16 +173,20 @@
 
     .area-head { padding: 13px 14px; }
     .area-head h2 { font-size: 16px; }
-    th, td { padding: 10px 12px; }
-    th { font-size: 11px; }
 
-    /* Big, finger-friendly Drop / Add */
-    .qty-cell { gap: 10px; }
-    .qbtn { padding: 13px 18px; font-size: 16px; min-height: 46px; }
-    .qty-val { font-size: 24px; min-width: 40px; }
+    .box-row { padding: 12px 14px; }
+    .box-row-top { gap: 8px; margin-bottom: 12px; }
+    .box-row-top .dim-label { font-size: 18px; }
+    .bc-btn { font-size: 11px; padding: 6px 8px; }
+
+    /* Big, finger-friendly Drop / Add — own line so nothing is cut off */
+    .qty-cell { gap: 12px; justify-content: flex-start; }
+    .qbtn { padding: 13px 20px; font-size: 16px; min-height: 48px; }
+    .qty-val { font-size: 26px; min-width: 44px; }
 
     .reorder ul { padding-left: 18px; }
     .sr-head { font-size: 12px; }
+    .modal-card { max-width: 100%; }
   }
 </style>
 </head>
@@ -179,8 +204,7 @@
   <div class="statusbar">
     <span class="dot" id="dot"></span>
     <span id="statusText">Loading…</span>
-    <a class="navlink" href="/scan" style="margin-left:auto;">📷 Scan</a>
-    <a class="navlink" href="/labels">🏷️ Labels</a>
+    <a class="navlink" href="/labels" style="margin-left:auto;">🏷️ Labels</a>
     <button class="tiny" id="refresh">Refresh</button>
   </div>
 
@@ -222,13 +246,35 @@
       New items appear on the <b>Tracker</b> tab — search there to set their counts.
     </p>
   </section>
+
+  <!-- Barcode assign / change modal -->
+  <div id="bcModal" class="modal" hidden>
+    <div class="modal-card">
+      <h3 id="bcTitle">Set barcode</h3>
+      <p class="modal-sub" id="bcSub"></p>
+      <label class="modal-label">Barcode
+        <input id="bcValue" autocomplete="off" inputmode="text" placeholder="Scan or type the barcode">
+      </label>
+      <label class="modal-label">Box size
+        <select id="bcBox"></select>
+      </label>
+      <label class="modal-label">Station
+        <select id="bcArea"></select>
+      </label>
+      <div class="modal-actions">
+        <button id="bcCancel">Cancel</button>
+        <button id="bcSave" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
 </main>
 
 <script>
 // ---- API layer ---------------------------------------------------------
 // Same-origin: this page is served by the API, so we just POST to /api.
-let state = { areas: [], boxTypes: [], inventory: {} };
+let state = { areas: [], boxTypes: [], inventory: {}, barcodes: [] };
 let savingCount = 0;   // pause polling while a save is in flight
+let scanMatchTypeId = null, scanMatchAreaId = null;   // highlight the scanned station
 
 async function api(action, payload) {
   const res = await fetch('/api', {
@@ -264,6 +310,11 @@ function totalForType(typeId) {
 }
 function isLow(t) {
   return t.reorderAt != null && totalForType(t.id) <= t.reorderAt;
+}
+// The barcode assigned to a box at a specific station ('' if none).
+function bcFor(typeId, areaId) {
+  const b = (state.barcodes || []).find(x => x.typeId === typeId && x.areaId === areaId);
+  return b ? b.barcode : '';
 }
 // "Length" = first number in the dimensions (the L in L x W x H). No dims sorts last.
 function boxLength(t) {
@@ -401,18 +452,22 @@ function render() {
       const card = document.createElement('div');
       card.className = 'area-card' + (searching ? '' : ' collapsed');
 
-      const rows = visibleTypes.map(t => {
+      const blocks = visibleTypes.map(t => {
         const qty = getQty(area.id, t.id);
-        return `<tr>
-          <td><span class="dim-label">${escapeHtml(typeLabel(t))}</span>${isLow(t) ? `<span class="low">reorder</span>` : ''}</td>
-          <td>
-            <div class="qty-cell">
-              <button class="qbtn drop" data-act="dec" data-area="${area.id}" data-type="${t.id}">Drop</button>
-              <span class="qty-val">${qty}</span>
-              <button class="qbtn add" data-act="inc" data-area="${area.id}" data-type="${t.id}">Add</button>
-            </div>
-          </td>
-        </tr>`;
+        const hasBc = !!bcFor(t.id, area.id);
+        const matched = (scanMatchTypeId === t.id && scanMatchAreaId === area.id);
+        return `<div class="box-row${matched ? ' matched' : ''}">
+          <div class="box-row-top">
+            <span class="dim-label">${escapeHtml(typeLabel(t))}</span>
+            ${isLow(t) ? `<span class="low">reorder</span>` : ''}
+            <button class="bc-btn" data-act="bc" data-area="${area.id}" data-type="${t.id}">🏷️ ${hasBc ? 'barcode ✓' : 'set barcode'}</button>
+          </div>
+          <div class="qty-cell">
+            <button class="qbtn drop" data-act="dec" data-area="${area.id}" data-type="${t.id}">Drop</button>
+            <span class="qty-val">${qty}</span>
+            <button class="qbtn add" data-act="inc" data-area="${area.id}" data-type="${t.id}">Add</button>
+          </div>
+        </div>`;
       }).join('');
 
       card.innerHTML = `
@@ -426,10 +481,7 @@ function render() {
           ? ''
           : (visibleTypes.length === 0
               ? `<div class="empty">No box sizes match your search.</div>`
-              : `<table>
-                  <tr><th>Box (dimensions)</th><th>Quantity</th></tr>
-                  ${rows}
-                </table>`)}
+              : `<div class="box-list">${blocks}</div>`)}
       `;
       container.appendChild(card);
     }
@@ -447,7 +499,10 @@ document.getElementById('refresh').onclick = refresh;
 // Three dimension search fields: re-search on input; space jumps to next field.
 const searchFields = ['search-l', 'search-w', 'search-h'].map(id => document.getElementById(id));
 searchFields.forEach((field, i) => {
-  field.addEventListener('input', render);     // re-render filters the tables live
+  field.addEventListener('input', () => {       // manual typing clears any scan highlight
+    scanMatchTypeId = null; scanMatchAreaId = null;
+    render();
+  });
   field.addEventListener('keydown', (e) => {
     if (e.key === ' ' || e.code === 'Space') {
       e.preventDefault();                       // don't type a space
@@ -458,8 +513,9 @@ searchFields.forEach((field, i) => {
 });
 document.getElementById('search-clear').onclick = () => {
   searchFields.forEach(f => { f.value = ''; });
+  scanMatchTypeId = null; scanMatchAreaId = null;
   render();
-  searchFields[0].focus();
+  focusScan();   // back to the scan catcher (NOT the L box) so the next scan splits correctly
 };
 
 document.querySelector('.tabs').addEventListener('click', (e) => {
@@ -481,15 +537,61 @@ document.getElementById('areas').addEventListener('click', (e) => {
   else if (act === 'dec') adjustQty(areaId, typeId, -1);
   else if (act === 'del-area') deleteArea(areaId);
   else if (act === 'del-type') deleteType(typeId);
+  else if (act === 'bc') { openBarcodeModal({ typeId, areaId }); return; }
   focusScan();   // back to the catcher so the next scan works
 });
+
+// ---- Barcode assign / change modal ------------------------------------
+const bcModal = document.getElementById('bcModal');
+function openBarcodeModal({ code = '', typeId = null, areaId = null }) {
+  modalOpen = true;
+  const boxSel = document.getElementById('bcBox');
+  const areaSel = document.getElementById('bcArea');
+  boxSel.innerHTML = [...state.boxTypes].sort(byLength)
+    .map(t => `<option value="${t.id}">${escapeHtml(t.dimensions)}</option>`).join('');
+  areaSel.innerHTML = state.areas
+    .map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
+  if (typeId != null) boxSel.value = String(typeId);
+  if (areaId != null) areaSel.value = String(areaId);
+  // Prefill the code: the scanned code, or the existing barcode for this box+station.
+  const existing = (typeId != null && areaId != null) ? bcFor(typeId, areaId) : '';
+  document.getElementById('bcValue').value = code || existing;
+  document.getElementById('bcTitle').textContent = existing ? 'Change barcode' : 'Set barcode';
+  document.getElementById('bcSub').textContent = code
+    ? `Assign scanned code "${code}" to a box and station.`
+    : 'Scan or type the barcode for this box at this station.';
+  bcModal.hidden = false;
+  setTimeout(() => document.getElementById('bcValue').focus(), 30);
+}
+function closeBarcodeModal() { bcModal.hidden = true; modalOpen = false; focusScan(); }
+async function saveBarcode() {
+  const barcode = document.getElementById('bcValue').value.trim();
+  const typeId = Number(document.getElementById('bcBox').value);
+  const areaId = Number(document.getElementById('bcArea').value);
+  if (!barcode) { document.getElementById('bcValue').focus(); return; }
+  try {
+    await api('setStationBarcode', { typeId, areaId, barcode });
+    closeBarcodeModal();
+    await refresh();
+    setStatus('ok', 'Barcode saved.');
+  } catch (e) {
+    setStatus('err', 'Could not save barcode: ' + e.message);
+  }
+}
+document.getElementById('bcCancel').onclick = closeBarcodeModal;
+document.getElementById('bcSave').onclick = saveBarcode;
+document.getElementById('bcValue').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); saveBarcode(); }   // scan-to-fill then save
+});
+bcModal.addEventListener('click', (e) => { if (e.target === bcModal) closeBarcodeModal(); });
 
 // ---- Scan anywhere on this page ---------------------------------------
 // A hidden input stays focused and catches the scanner's keystrokes (which end
 // in Enter). The whole code lands there, gets looked up, and fills ALL THREE
 // L × W × H boxes — so you never tap a field and every box populates.
 const scanCapture = document.getElementById('scanCapture');
-function focusScan() { try { scanCapture.focus({ preventScroll: true }); } catch (e) {} }
+let modalOpen = false;   // while the barcode modal is up, don't grab scan focus
+function focusScan() { if (modalOpen) return; try { scanCapture.focus({ preventScroll: true }); } catch (e) {} }
 
 scanCapture.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
@@ -510,11 +612,12 @@ document.addEventListener('click', (e) => {
 });
 
 async function handleScan(code) {
+  if (modalOpen) return;
   try {
     const res = await api('lookupBarcode', { code });
     if (!res.found) {
-      setStatus('err', `Scanned "${code}" — no box linked. Open 📷 Scan to link it.`);
-      focusScan();
+      // Unknown code → pop up to assign it to a box + station.
+      openBarcodeModal({ code });
       return;
     }
     // Split the box's dimensions into the three boxes (e.g. 12x6x6 → 12, 6, 6).
@@ -522,8 +625,15 @@ async function handleScan(code) {
     document.getElementById('search-l').value = p[0] || '';
     document.getElementById('search-w').value = p[1] || '';
     document.getElementById('search-h').value = p[2] || '';
-    render();                                   // shows the box with Drop / Add
-    setStatus('ok', `Scanned ${res.type.dimensions} — Drop or Add below.`);
+    scanMatchTypeId = res.type.id;
+    scanMatchAreaId = res.matchedAreaId || null;   // highlight that station, if known
+    render();
+    if (res.matchedAreaId) {
+      const a = (res.areas || []).find(x => x.id === res.matchedAreaId);
+      setStatus('ok', `Scanned ${res.type.dimensions} @ ${a ? a.name : ''} — Drop or Add.`);
+    } else {
+      setStatus('ok', `Scanned ${res.type.dimensions} — Drop or Add below.`);
+    }
   } catch (e) {
     setStatus('err', 'Scan lookup failed: ' + e.message);
   }

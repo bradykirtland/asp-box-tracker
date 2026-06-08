@@ -70,8 +70,19 @@ async function ensureSchema() {
     );
   `);
 
-  // Optional barcode for scanning. Safe to re-run (no-op if it already exists).
+  // Optional whole-box barcode (legacy / dimension labels). Safe to re-run.
   await pool.query(`ALTER TABLE box_types ADD COLUMN IF NOT EXISTS barcode TEXT`);
+
+  // Per-station barcodes: a barcode is tied to one box AT one area, so the
+  // same box size can have a different label at each station.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS box_barcodes (
+      barcode  TEXT PRIMARY KEY,
+      type_id  INTEGER NOT NULL REFERENCES box_types(id) ON DELETE CASCADE,
+      area_id  INTEGER NOT NULL REFERENCES box_areas(id) ON DELETE CASCADE,
+      UNIQUE (type_id, area_id)
+    )
+  `);
 
   const { rows: a } = await pool.query('SELECT count(*)::int AS n FROM box_areas');
   if (a[0].n === 0) {
@@ -109,14 +120,15 @@ function cleanInt(v) {
 //   { areas:[{id,name}], boxTypes:[{id,dimensions,reorderAt}],
 //     inventory:{ "<areaId>:<typeId>": quantity } }
 async function getState() {
-  const [areas, types, inv] = await Promise.all([
+  const [areas, types, inv, bc] = await Promise.all([
     pool.query('SELECT id, name FROM box_areas ORDER BY id'),
     pool.query('SELECT id, dimensions, reorder_at AS "reorderAt", barcode FROM box_types ORDER BY id'),
     pool.query('SELECT area_id, type_id, quantity FROM box_inventory'),
+    pool.query('SELECT barcode, type_id AS "typeId", area_id AS "areaId" FROM box_barcodes'),
   ]);
   const inventory = {};
   for (const r of inv.rows) inventory[`${r.area_id}:${r.type_id}`] = r.quantity;
-  return { areas: areas.rows, boxTypes: types.rows, inventory };
+  return { areas: areas.rows, boxTypes: types.rows, inventory, barcodes: bc.rows };
 }
 
 // Increase/decrease a count by delta, clamped at 0, atomically in the DB.
@@ -187,51 +199,76 @@ async function deleteType(id) {
 // Scanning
 // =================================================================
 
-// Look up a box by a scanned code. Matches the box's assigned barcode OR its
-// dimensions text (so a barcode printed of "12x6x6" works with no setup).
-// Returns the box plus its current stock at EVERY area.
+// Look up a box by a scanned code. First tries a PER-STATION barcode (which
+// also tells us which area/station the label is for); then falls back to a
+// whole-box barcode or the dimensions text. Returns the box, the matched
+// station (if any), and current stock at EVERY area.
 async function lookupBarcode(code) {
   const c = String(code || '').trim();
   if (!c) return { found: false, code: c };
   const norm = c.toLowerCase();
-  const { rows } = await pool.query(
-    `SELECT id, dimensions, barcode, reorder_at AS "reorderAt"
-       FROM box_types
-      WHERE lower(coalesce(barcode, '')) = $1 OR lower(dimensions) = $1
-      ORDER BY id LIMIT 1`,
+
+  let type = null;
+  let matchedAreaId = null;
+
+  // 1) Per-station barcode → we know the box AND the station.
+  const st = await pool.query(
+    `SELECT bb.type_id, bb.area_id, t.dimensions, t.reorder_at AS "reorderAt"
+       FROM box_barcodes bb JOIN box_types t ON t.id = bb.type_id
+      WHERE lower(bb.barcode) = $1 LIMIT 1`,
     [norm]
   );
-  if (!rows.length) return { found: false, code: c };
-  const t = rows[0];
+  if (st.rows.length) {
+    type = { id: st.rows[0].type_id, dimensions: st.rows[0].dimensions, reorderAt: st.rows[0].reorderAt };
+    matchedAreaId = st.rows[0].area_id;
+  } else {
+    // 2) Whole-box barcode or the dimensions text (e.g. a printed "12x6x6").
+    const r = await pool.query(
+      `SELECT id, dimensions, reorder_at AS "reorderAt"
+         FROM box_types
+        WHERE lower(coalesce(barcode, '')) = $1 OR lower(dimensions) = $1
+        ORDER BY id LIMIT 1`,
+      [norm]
+    );
+    if (r.rows.length) type = { id: r.rows[0].id, dimensions: r.rows[0].dimensions, reorderAt: r.rows[0].reorderAt };
+  }
+
+  if (!type) return { found: false, code: c };
+
   const { rows: areas } = await pool.query(
     `SELECT a.id, a.name, coalesce(i.quantity, 0) AS qty
        FROM box_areas a
        LEFT JOIN box_inventory i ON i.area_id = a.id AND i.type_id = $1
       ORDER BY a.id`,
-    [t.id]
+    [type.id]
   );
   const locs = areas.map(r => ({ id: r.id, name: r.name, qty: Number(r.qty) }));
-  return {
-    found: true,
-    type: t,
-    areas: locs,
-    total: locs.reduce((s, r) => s + r.qty, 0),
-  };
+  return { found: true, type, matchedAreaId, areas: locs, total: locs.reduce((s, r) => s + r.qty, 0) };
 }
 
-// Link a scanned barcode to an existing box (one-time, for boxes whose own
-// printed barcode you want to use). Barcodes must be unique across boxes.
-async function setBarcode(typeId, barcode) {
-  const t = cleanInt(typeId);
-  if (t === null) return { error: 'Bad box id' };
+// Assign (or change) the barcode for a specific box AT a specific station.
+// One barcode per (box, station); replaces any previous one for that pair, and
+// detaches the barcode from anywhere else it was used.
+async function setStationBarcode(typeId, areaId, barcode) {
+  const t = cleanInt(typeId), a = cleanInt(areaId);
   const bc = String(barcode || '').trim();
+  if (t === null) return { error: 'Bad box id' };
+  if (a === null) return { error: 'Bad station id' };
   if (!bc) return { error: 'Barcode is required' };
-  const dup = await pool.query(
-    `SELECT id FROM box_types WHERE lower(barcode) = lower($1) AND id <> $2`, [bc, t]
-  );
-  if (dup.rows.length) return { error: 'That barcode is already linked to another box' };
-  const { rowCount } = await pool.query(`UPDATE box_types SET barcode = $1 WHERE id = $2`, [bc, t]);
-  if (!rowCount) return { error: 'Box not found' };
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM box_barcodes WHERE lower(barcode) = lower($1)`, [bc]);
+    await client.query(`DELETE FROM box_barcodes WHERE type_id = $1 AND area_id = $2`, [t, a]);
+    await client.query(`INSERT INTO box_barcodes (barcode, type_id, area_id) VALUES ($1, $2, $3)`, [bc, t, a]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
   return { ok: true };
 }
 
@@ -248,7 +285,6 @@ function sendPage(res, file) {
 }
 
 app.get('/', (req, res) => sendPage(res, 'index.html'));
-app.get('/scan', (req, res) => sendPage(res, 'scan.html'));      // barcode scanning screen
 app.get('/labels', (req, res) => sendPage(res, 'labels.html'));  // printable barcodes
 
 app.get('/health', (req, res) => res.json({ ok: true, app: 'asp-box-tracker' }));
@@ -265,8 +301,8 @@ app.post('/api', async (req, res) => {
       case 'addType':    out = await addType(body.dimensions, body.reorderAt); break;
       case 'deleteArea': out = await deleteArea(body.id); break;
       case 'deleteType': out = await deleteType(body.id); break;
-      case 'lookupBarcode': out = await lookupBarcode(body.code); break;
-      case 'setBarcode':    out = await setBarcode(body.typeId, body.barcode); break;
+      case 'lookupBarcode':     out = await lookupBarcode(body.code); break;
+      case 'setStationBarcode': out = await setStationBarcode(body.typeId, body.areaId, body.barcode); break;
       default:           out = { error: 'Unknown action: ' + body.action };
     }
     res.json(out);
