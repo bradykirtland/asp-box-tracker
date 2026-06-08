@@ -139,8 +139,10 @@
   .modal-sub { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
   .modal-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
   .modal-label input, .modal-label select { width: 100%; font: inherit; font-size: 16px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; margin-top: 4px; }
-  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; flex-wrap: wrap; }
+  .modal-actions button { padding: 11px 16px; }
   .modal-actions .primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  .tf-q { font-size: 15px; margin: 2px 0 14px; }
 
   /* Scan-result popup */
   .scan-card { max-width: 420px; text-align: center; }
@@ -287,6 +289,23 @@
       <div id="scanModalBody"></div>
       <div class="modal-actions">
         <button id="scanDone" class="primary">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transfer prompt: taking from Box Area asks if it's going to Loading Dock -->
+  <div id="transferModal" class="modal" hidden>
+    <div class="modal-card">
+      <h3 id="tfTitle">Take from Box Area</h3>
+      <p class="modal-sub" id="tfSub"></p>
+      <label class="modal-label">How many?
+        <input id="tfQty" type="number" min="1" value="1" inputmode="numeric">
+      </label>
+      <p class="tf-q" id="tfQ"></p>
+      <div class="modal-actions">
+        <button id="tfCancel">Cancel</button>
+        <button id="tfNo">No, just remove</button>
+        <button id="tfYes" class="primary">Yes, move them</button>
       </div>
     </div>
   </div>
@@ -558,7 +577,7 @@ document.getElementById('areas').addEventListener('click', (e) => {
   const areaId = Number(btn.dataset.area);
   const typeId = Number(btn.dataset.type);
   if (act === 'inc') adjustQty(areaId, typeId, 1);
-  else if (act === 'dec') adjustQty(areaId, typeId, -1);
+  else if (act === 'dec') dropFrom(areaId, typeId);
   else if (act === 'del-area') deleteArea(areaId);
   else if (act === 'del-type') deleteType(typeId);
   else if (act === 'bc') { openBarcodeModal({ typeId, areaId }); return; }
@@ -652,7 +671,7 @@ scanModal.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-act]');
   if (btn) {
     const areaId = Number(btn.dataset.area), typeId = Number(btn.dataset.type);
-    if (btn.dataset.act === 'dec') adjustQty(areaId, typeId, -1);
+    if (btn.dataset.act === 'dec') dropFrom(areaId, typeId);
     else if (btn.dataset.act === 'inc') adjustQty(areaId, typeId, 1);
     focusScan();
     return;
@@ -660,6 +679,54 @@ scanModal.addEventListener('click', (e) => {
   if (e.target === scanModal) closeScanPopup();   // tap outside the card to close
 });
 document.getElementById('scanDone').onclick = closeScanPopup;
+
+// ---- Drop, with Box Area → Loading Dock transfer prompt ----------------
+function boxAreaArea() { return state.areas.find(a => /box\s*area/i.test(a.name)); }
+function loadingDockArea() { return state.areas.find(a => /loading\s*dock/i.test(a.name)); }
+
+// A "Drop" (take). From Box Area it asks whether the boxes go to Loading Dock.
+function dropFrom(areaId, typeId) {
+  const ba = boxAreaArea(), ld = loadingDockArea();
+  if (ba && ld && areaId === ba.id) openTransferDialog(typeId, ba, ld);
+  else adjustQty(areaId, typeId, -1);
+}
+
+const transferModal = document.getElementById('transferModal');
+let tfCtx = null;
+function openTransferDialog(typeId, ba, ld) {
+  tfCtx = { typeId, ba, ld };
+  modalOpen = true;                                  // pause scanning while open
+  const t = state.boxTypes.find(x => x.id === typeId);
+  const avail = getQty(ba.id, typeId);
+  document.getElementById('tfTitle').textContent = `Take from ${ba.name}`;
+  document.getElementById('tfSub').textContent = `${t ? t.dimensions : ''} — ${avail} in ${ba.name} now.`;
+  document.getElementById('tfQ').innerHTML = `Are these going to the <b>${escapeHtml(ld.name)}</b>?`;
+  const q = document.getElementById('tfQty');
+  q.value = '1';
+  transferModal.hidden = false;
+  setTimeout(() => { q.focus(); q.select(); }, 30);
+}
+function closeTransfer() { transferModal.hidden = true; modalOpen = false; tfCtx = null; focusScan(); }
+async function applyTransfer(move) {
+  if (!tfCtx) return;
+  const { typeId, ba, ld } = tfCtx;
+  let qty = parseInt(document.getElementById('tfQty').value, 10);
+  if (!Number.isInteger(qty) || qty < 1) qty = 1;
+  const moved = Math.min(qty, getQty(ba.id, typeId));   // never move more than is there
+  closeTransfer();
+  if (moved <= 0) { setStatus('err', `${ba.name} is empty for that box.`); return; }
+  await adjustQty(ba.id, typeId, -moved);               // take out of Box Area
+  if (move) {
+    await adjustQty(ld.id, typeId, moved);              // ...and into Loading Dock
+    setStatus('ok', `Moved ${moved} from ${ba.name} to ${ld.name}.`);
+  } else {
+    setStatus('ok', `Removed ${moved} from ${ba.name}.`);
+  }
+}
+document.getElementById('tfYes').onclick = () => applyTransfer(true);
+document.getElementById('tfNo').onclick = () => applyTransfer(false);
+document.getElementById('tfCancel').onclick = closeTransfer;
+transferModal.addEventListener('click', (e) => { if (e.target === transferModal) closeTransfer(); });
 
 // ---- Scan anywhere on this page ---------------------------------------
 // A hidden input stays focused and catches the scanner's keystrokes (which end
