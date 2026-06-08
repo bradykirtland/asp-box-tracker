@@ -84,6 +84,24 @@ async function ensureSchema() {
     )
   `);
 
+  // Incoming orders: a named order with box-size lines. Scanning its code
+  // (ORD-<id>) on arrival fills those boxes into an area.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id          SERIAL PRIMARY KEY,
+      name        TEXT NOT NULL DEFAULT '',
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS order_lines (
+      id        SERIAL PRIMARY KEY,
+      order_id  INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      type_id   INTEGER NOT NULL REFERENCES box_types(id) ON DELETE CASCADE,
+      qty       INTEGER NOT NULL CHECK (qty > 0)
+    )
+  `);
+
   const { rows: a } = await pool.query('SELECT count(*)::int AS n FROM box_areas');
   if (a[0].n === 0) {
     for (const name of SEED_AREAS) {
@@ -288,6 +306,102 @@ async function ensureStationBarcodes() {
 }
 
 // =================================================================
+// Orders (incoming shipments)
+// =================================================================
+
+async function createOrder(name, lines) {
+  const nm = String(name || '').trim() || 'Order';
+  if (!Array.isArray(lines)) return { error: 'No box lines' };
+  const clean = [];
+  for (const l of (lines || [])) {
+    const tid = cleanInt(l && l.typeId), q = cleanInt(l && l.qty);
+    if (tid !== null && q !== null && q > 0) clean.push({ typeId: tid, qty: q });
+  }
+  if (!clean.length) return { error: 'Add at least one box with a quantity' };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('INSERT INTO orders (name) VALUES ($1) RETURNING id', [nm]);
+    const id = rows[0].id;
+    for (const l of clean) {
+      await client.query('INSERT INTO order_lines (order_id, type_id, qty) VALUES ($1, $2, $3)', [id, l.typeId, l.qty]);
+    }
+    await client.query('COMMIT');
+    return { ok: true, id, barcode: 'ORD-' + id };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function listOrders() {
+  const { rows } = await pool.query(`
+    SELECT o.id, o.name,
+           coalesce(
+             json_agg(json_build_object('typeId', l.type_id, 'dimensions', t.dimensions, 'qty', l.qty)
+                      ORDER BY t.dimensions) FILTER (WHERE l.id IS NOT NULL),
+             '[]'
+           ) AS lines
+      FROM orders o
+      LEFT JOIN order_lines l ON l.order_id = o.id
+      LEFT JOIN box_types t ON t.id = l.type_id
+     GROUP BY o.id
+     ORDER BY o.id DESC`);
+  return { orders: rows.map(r => ({ id: r.id, name: r.name, barcode: 'ORD-' + r.id, lines: r.lines })) };
+}
+
+async function lookupOrder(code) {
+  const m = /^ord-(\d+)$/i.exec(String(code || '').trim());
+  if (!m) return { found: false };
+  const id = parseInt(m[1], 10);
+  const { rows: o } = await pool.query('SELECT id, name FROM orders WHERE id = $1', [id]);
+  if (!o.length) return { found: false };
+  const { rows: lines } = await pool.query(
+    `SELECT l.type_id AS "typeId", t.dimensions, l.qty
+       FROM order_lines l JOIN box_types t ON t.id = l.type_id
+      WHERE l.order_id = $1 ORDER BY t.dimensions`, [id]
+  );
+  return { found: true, order: { id: o[0].id, name: o[0].name, barcode: 'ORD-' + id }, lines };
+}
+
+// Fill an order's boxes INTO an area (adds the quantities).
+async function fillOrder(orderId, areaId) {
+  const oid = cleanInt(orderId), aid = cleanInt(areaId);
+  if (oid === null) return { error: 'Bad order id' };
+  if (aid === null) return { error: 'Bad area id' };
+  const { rows: lines } = await pool.query('SELECT type_id, qty FROM order_lines WHERE order_id = $1', [oid]);
+  if (!lines.length) return { error: 'Order has no boxes' };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const l of lines) {
+      await client.query(
+        `INSERT INTO box_inventory (area_id, type_id, quantity) VALUES ($1, $2, $3)
+         ON CONFLICT (area_id, type_id)
+         DO UPDATE SET quantity = GREATEST(box_inventory.quantity + $3, 0), updated_at = now()`,
+        [aid, l.type_id, l.qty]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+  return { ok: true, lines: lines.length };
+}
+
+async function deleteOrder(id) {
+  const oid = cleanInt(id);
+  if (oid === null) return { error: 'Bad order id' };
+  await pool.query('DELETE FROM orders WHERE id = $1', [oid]);   // lines cascade
+  return { ok: true };
+}
+
+// =================================================================
 // HTTP server
 // =================================================================
 
@@ -319,6 +433,11 @@ app.post('/api', async (req, res) => {
       case 'lookupBarcode':     out = await lookupBarcode(body.code); break;
       case 'setStationBarcode': out = await setStationBarcode(body.typeId, body.areaId, body.barcode); break;
       case 'ensureStationBarcodes': out = await ensureStationBarcodes(); break;
+      case 'createOrder': out = await createOrder(body.name, body.lines); break;
+      case 'listOrders':  out = await listOrders(); break;
+      case 'lookupOrder': out = await lookupOrder(body.code); break;
+      case 'fillOrder':   out = await fillOrder(body.orderId, body.areaId); break;
+      case 'deleteOrder': out = await deleteOrder(body.id); break;
       default:           out = { error: 'Unknown action: ' + body.action };
     }
     res.json(out);

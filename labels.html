@@ -85,7 +85,27 @@ function boxLen(d){ const m=(d||'').match(/\d+(\.\d+)?/g); return m&&m.length?Nu
       count++;
     });
   });
-  note.textContent = count + ' labels — ' + boxes.length + ' box size(s) × ' + areas.length + ' station(s).';
+  // Order labels (ORD-<id>) — scan on arrival to fill into the Box Area.
+  let orders = [];
+  try { orders = (await api('listOrders')).orders || []; } catch (e) {}
+  if (orders.length) {
+    const h = document.createElement('div');
+    h.style.cssText = 'grid-column:1/-1; font-weight:700; margin:18px 0 4px; border-top:1px solid var(--line); padding-top:14px;';
+    h.textContent = 'Order labels — scan when the shipment arrives';
+    grid.appendChild(h);
+    orders.forEach(o => {
+      const id = 'bc' + (i++);
+      const cell = document.createElement('div');
+      cell.className = 'label';
+      cell.innerHTML = `<div class="dims">${escapeHtml(o.name || ('Order ' + o.id))}</div>
+                        <div class="station">${o.lines.map(l => escapeHtml(l.dimensions) + '×' + l.qty).join(', ') || '(empty)'}</div>
+                        <svg id="${id}"></svg>`;
+      grid.appendChild(cell);
+      try { JsBarcode('#' + id, o.barcode, { format: 'CODE128', displayValue: true, fontSize: 13, height: 48, margin: 6 }); } catch (e) {}
+    });
+  }
+  note.textContent = count + ' box labels (' + boxes.length + '×' + areas.length + ')'
+    + (orders.length ? ' + ' + orders.length + ' order label(s)' : '') + '.';
 })();
 </script>
 </body>

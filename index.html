@@ -165,6 +165,19 @@
   .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
   .hint { color: var(--muted); font-size: 13px; margin-top: 28px; }
 
+  .manage-h { margin: 28px 0 6px; font-size: 16px; border-top: 1px solid var(--line); padding-top: 22px; }
+  .order-card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .order-card .o-name { font-weight: 700; }
+  .order-card .o-code { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .order-card .o-lines { font-size: 13px; color: var(--ink); margin: 6px 0 10px; }
+  .order-card .o-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .oc-line { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .oc-line select { flex: 1 1 auto; font: inherit; padding: 9px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+  .oc-line input { width: 64px; font: inherit; padding: 9px; border: 1px solid var(--line); border-radius: 8px; text-align: center; }
+  .oc-line .rm { color: var(--danger); border: none; background: none; font-size: 18px; padding: 4px 8px; }
+  .order-summary { text-align: left; display: grid; gap: 6px; margin: 10px 0; }
+  .order-summary .ol { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+
   /* ---- Small rugged handheld screens (e.g. Chainway C61, ~4") ---- */
   @media (max-width: 560px) {
     header { padding: 12px 14px; }
@@ -260,6 +273,14 @@
       (dimensions like <code>12x6x6</code>, plus an optional restock-warning level).
       New items appear on the <b>Tracker</b> tab — search there to set their counts.
     </p>
+
+    <h3 class="manage-h">Incoming orders</h3>
+    <p class="hint" style="margin-top:0;">
+      Create an order with the boxes it contains. When the shipment arrives, scan its
+      <b>ORD-…</b> barcode (print it from <b>🏷️ Labels</b>) and confirm to add the boxes to the Box Area.
+    </p>
+    <div class="toolbar"><button class="primary" id="newOrder">+ New order</button></div>
+    <div id="orderList"></div>
   </section>
 
   <!-- Barcode assign / change modal -->
@@ -306,6 +327,33 @@
         <button id="tfCancel">Cancel</button>
         <button id="tfNo">No, just remove</button>
         <button id="tfYes" class="primary">Yes, move them</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Order arrived: confirm adding its boxes to the Box Area -->
+  <div id="orderModal" class="modal" hidden>
+    <div class="modal-card scan-card">
+      <div id="orderModalBody"></div>
+      <div class="modal-actions">
+        <button id="orderNo">Cancel</button>
+        <button id="orderYes" class="primary">Add to Box Area</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Build a new order -->
+  <div id="orderCreateModal" class="modal" hidden>
+    <div class="modal-card">
+      <h3>New order</h3>
+      <label class="modal-label">Order name / number
+        <input id="ocName" autocomplete="off" placeholder="e.g. PO 1234">
+      </label>
+      <div id="ocLines"></div>
+      <button id="ocAddLine" type="button" style="margin:2px 0 14px; padding:8px 12px;">+ Add box</button>
+      <div class="modal-actions">
+        <button id="ocCancel">Cancel</button>
+        <button id="ocSave" class="primary">Create order</button>
       </div>
     </div>
   </div>
@@ -568,6 +616,7 @@ document.querySelector('.tabs').addEventListener('click', (e) => {
   document.querySelectorAll('.tab-panel').forEach(p => {
     p.hidden = (p.id !== 'tab-' + tab.dataset.tab);
   });
+  if (tab.dataset.tab === 'manage') loadOrders();
 });
 
 document.getElementById('areas').addEventListener('click', (e) => {
@@ -729,6 +778,121 @@ document.getElementById('tfNo').onclick = () => applyTransfer(false);
 document.getElementById('tfCancel').onclick = closeTransfer;
 transferModal.addEventListener('click', (e) => { if (e.target === transferModal) closeTransfer(); });
 
+// ---- Orders: receive (scan) ------------------------------------------
+const orderModal = document.getElementById('orderModal');
+let orderToFill = null;
+function openOrderPopup(ord) {
+  orderToFill = ord;
+  modalOpen = true;
+  const ba = boxAreaArea();
+  const rows = (ord.lines || []).map(l =>
+    `<div class="ol"><span>${escapeHtml(l.dimensions)}</span><b>${l.qty}</b></div>`).join('')
+    || '<div class="ol">(no boxes on this order)</div>';
+  document.getElementById('orderModalBody').innerHTML = `
+    <h3 class="scan-dims" style="font-size:24px;">📦 ${escapeHtml(ord.order.name || ('Order ' + ord.order.id))}</h3>
+    <div class="scan-total">${ord.order.barcode}</div>
+    <div class="order-summary">${rows}</div>
+    <p class="tf-q">Add these boxes to the <b>${escapeHtml(ba ? ba.name : 'Box Area')}</b>?</p>`;
+  orderModal.hidden = false;
+}
+function closeOrderPopup() { orderModal.hidden = true; modalOpen = false; orderToFill = null; focusScan(); }
+async function confirmFillOrder() {
+  if (!orderToFill) return;
+  const ba = boxAreaArea();
+  const ord = orderToFill;
+  closeOrderPopup();
+  if (!ba) { setStatus('err', 'No Box Area found.'); return; }
+  try {
+    const r = await api('fillOrder', { orderId: ord.order.id, areaId: ba.id });
+    await refresh();
+    setStatus('ok', `Added ${ord.order.name || ('order ' + ord.order.id)} to ${ba.name} (${r.lines} box size(s)).`);
+  } catch (e) {
+    setStatus('err', 'Could not fill order: ' + e.message);
+  }
+}
+document.getElementById('orderYes').onclick = confirmFillOrder;
+document.getElementById('orderNo').onclick = closeOrderPopup;
+orderModal.addEventListener('click', (e) => { if (e.target === orderModal) closeOrderPopup(); });
+
+// ---- Orders: create + manage -----------------------------------------
+const orderCreateModal = document.getElementById('orderCreateModal');
+function ocAddLine() {
+  const wrap = document.createElement('div');
+  wrap.className = 'oc-line';
+  const opts = [...state.boxTypes].sort(byLength)
+    .map(t => `<option value="${t.id}">${escapeHtml(t.dimensions)}</option>`).join('');
+  wrap.innerHTML = `<select class="oc-box">${opts}</select>
+    <input class="oc-qty" type="number" min="1" value="1" inputmode="numeric">
+    <button type="button" class="rm" title="Remove">×</button>`;
+  wrap.querySelector('.rm').onclick = () => wrap.remove();
+  document.getElementById('ocLines').appendChild(wrap);
+}
+function openOrderCreate() {
+  modalOpen = true;
+  document.getElementById('ocName').value = '';
+  document.getElementById('ocLines').innerHTML = '';
+  ocAddLine();
+  orderCreateModal.hidden = false;
+  setTimeout(() => document.getElementById('ocName').focus(), 30);
+}
+function closeOrderCreate() { orderCreateModal.hidden = true; modalOpen = false; focusScan(); }
+async function saveOrder() {
+  const name = document.getElementById('ocName').value.trim();
+  const lines = [...document.querySelectorAll('#ocLines .oc-line')].map(w => ({
+    typeId: Number(w.querySelector('.oc-box').value),
+    qty: parseInt(w.querySelector('.oc-qty').value, 10),
+  })).filter(l => l.typeId && Number.isInteger(l.qty) && l.qty > 0);
+  if (!lines.length) { setStatus('err', 'Add at least one box to the order.'); return; }
+  try {
+    const r = await api('createOrder', { name, lines });
+    closeOrderCreate();
+    setStatus('ok', `Created order ${r.barcode}. Print its label from 🏷️ Labels.`);
+    loadOrders();
+  } catch (e) {
+    setStatus('err', 'Could not create order: ' + e.message);
+  }
+}
+document.getElementById('newOrder').onclick = openOrderCreate;
+document.getElementById('ocAddLine').onclick = ocAddLine;
+document.getElementById('ocSave').onclick = saveOrder;
+document.getElementById('ocCancel').onclick = closeOrderCreate;
+orderCreateModal.addEventListener('click', (e) => { if (e.target === orderCreateModal) closeOrderCreate(); });
+
+async function loadOrders() {
+  const box = document.getElementById('orderList');
+  try {
+    const { orders } = await api('listOrders');
+    if (!orders.length) { box.innerHTML = '<p class="hint" style="margin-top:0;">No orders yet.</p>'; return; }
+    box.innerHTML = orders.map(o => {
+      const lines = o.lines.map(l => `${escapeHtml(l.dimensions)} ×${l.qty}`).join(', ') || '(empty)';
+      return `<div class="order-card">
+        <div class="o-name">${escapeHtml(o.name || ('Order ' + o.id))} <span class="o-code">${o.barcode}</span></div>
+        <div class="o-lines">${lines}</div>
+        <div class="o-actions">
+          <button class="primary" data-oact="fill" data-id="${o.id}">Add to Box Area</button>
+          <button class="link" data-oact="del" data-id="${o.id}">delete</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = `<p class="hint" style="margin-top:0;color:var(--danger);">Could not load orders: ${escapeHtml(e.message)}</p>`;
+  }
+}
+document.getElementById('orderList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-oact]');
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  if (btn.dataset.oact === 'fill') {
+    const ba = boxAreaArea();
+    if (!ba) { setStatus('err', 'No Box Area found.'); return; }
+    try { const r = await api('fillOrder', { orderId: id, areaId: ba.id }); await refresh(); setStatus('ok', `Added order to ${ba.name} (${r.lines} box size(s)).`); }
+    catch (err) { setStatus('err', 'Could not fill: ' + err.message); }
+  } else if (btn.dataset.oact === 'del') {
+    if (!confirm('Delete this order?')) return;
+    try { await api('deleteOrder', { id }); loadOrders(); } catch (err) { setStatus('err', 'Could not delete: ' + err.message); }
+  }
+});
+
 // ---- Scan anywhere on this page ---------------------------------------
 // A hidden input stays focused and catches the scanner's keystrokes (which end
 // in Enter). The whole code lands there, gets looked up, and fills ALL THREE
@@ -760,7 +924,10 @@ async function handleScan(code) {
   try {
     const res = await api('lookupBarcode', { code });
     if (!res.found) {
-      // Unknown code → pop up to assign it to a box + station.
+      // Maybe it's an order barcode (ORD-…) → confirm adding to the Box Area.
+      const ord = await api('lookupOrder', { code });
+      if (ord.found) { openOrderPopup(ord); return; }
+      // Otherwise unknown → pop up to assign it to a box + station.
       openBarcodeModal({ code });
       return;
     }
