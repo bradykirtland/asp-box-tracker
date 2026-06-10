@@ -635,8 +635,10 @@ document.getElementById('areas').addEventListener('click', (e) => {
 
 // ---- Barcode assign / change modal ------------------------------------
 const bcModal = document.getElementById('bcModal');
+let bcFromScan = '';   // set when the modal was opened by an unknown scan
 function openBarcodeModal({ code = '', typeId = null, areaId = null }) {
   if (scanPopupOpen) closeScanPopup();   // don't stack on top of the scan popup
+  bcFromScan = code || '';
   modalOpen = true;
   const boxSel = document.getElementById('bcBox');
   const areaSel = document.getElementById('bcArea');
@@ -664,9 +666,13 @@ async function saveBarcode() {
   if (!barcode) { document.getElementById('bcValue').focus(); return; }
   try {
     await api('setStationBarcode', { typeId, areaId, barcode });
+    const fromScan = bcFromScan;
     closeBarcodeModal();
     await refresh();
     setStatus('ok', 'Barcode saved.');
+    // If this came from an unknown scan, open the box right away so the
+    // worker can Drop/Add without scanning a second time.
+    if (fromScan) await handleScan(fromScan);
   } catch (e) {
     setStatus('err', 'Could not save barcode: ' + e.message);
   }
@@ -776,6 +782,10 @@ async function applyTransfer(move) {
 document.getElementById('tfYes').onclick = () => applyTransfer(true);
 document.getElementById('tfNo').onclick = () => applyTransfer(false);
 document.getElementById('tfCancel').onclick = closeTransfer;
+// Enter in the quantity field = the primary action (Yes, move them).
+document.getElementById('tfQty').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); applyTransfer(true); }
+});
 transferModal.addEventListener('click', (e) => { if (e.target === transferModal) closeTransfer(); });
 
 // ---- Orders: receive (scan) ------------------------------------------
@@ -927,6 +937,13 @@ async function handleScan(code) {
       // Maybe it's an order barcode (ORD-…) → confirm adding to the Box Area.
       const ord = await api('lookupOrder', { code });
       if (ord.found) { openOrderPopup(ord); return; }
+      if (/^ord-\d+$/i.test(code)) {
+        // Looks like an order label but no such order — don't offer to link
+        // it as a box barcode (that would be a mistake waiting to happen).
+        setStatus('err', `Order "${code}" not found — it may have been deleted.`);
+        focusScan();
+        return;
+      }
       // Otherwise unknown → pop up to assign it to a box + station.
       openBarcodeModal({ code });
       return;
