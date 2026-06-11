@@ -686,6 +686,13 @@ function openBarcodeModal({ code = '', typeId = null, areaId = null }) {
     .map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
   if (typeId != null) boxSel.value = String(typeId);
   if (areaId != null) areaSel.value = String(areaId);
+  // Safety net: if the scanned code carries our ASP-<box>-<station> pattern,
+  // preselect that box and station so nothing has to be picked by hand.
+  const asp = /asp-(\d+)-(\d+)/i.exec(code || '');
+  if (asp) {
+    if (state.boxTypes.some(t => t.id === Number(asp[1]))) boxSel.value = asp[1];
+    if (state.areas.some(a => a.id === Number(asp[2]))) areaSel.value = asp[2];
+  }
   // Prefill the code: the scanned code, or the existing barcode for this box+station.
   const existing = (typeId != null && areaId != null) ? bcFor(typeId, areaId) : '';
   document.getElementById('bcValue').value = code || existing;
@@ -1007,7 +1014,7 @@ async function handleScan(code) {
       // Maybe it's an order barcode (ORD-…) → confirm adding to the Box Area.
       const ord = await api('lookupOrder', { code });
       if (ord.found) { openOrderPopup(ord); return; }
-      if (/^ord-\d+$/i.test(code)) {
+      if (/ord-\d+/i.test(code)) {
         // Looks like an order label but no such order — don't offer to link
         // it as a box barcode (that would be a mistake waiting to happen).
         setStatus('err', `Order "${code}" not found — it may have been deleted.`);
