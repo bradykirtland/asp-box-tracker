@@ -326,12 +326,30 @@ async function lookupBarcode(code) {
   let type = null;
   let matchedAreaId = null;
 
-  // 0) Our own label pattern, found ANYWHERE in the scan. Some scanners add
-  // prefix/suffix characters (e.g. a "]Q1" QR symbology tag), which used to
-  // make the exact match fail and pop the link screen. The IDs in the code
-  // tell us the box and station directly; self-heal the barcode row if absent.
+  // Extract our label pattern if it appears ANYWHERE in the scan — scanners
+  // can add prefix/suffix characters (e.g. a "]Q1" QR symbology tag).
   const asp = /asp-(\d+)-(\d+)/i.exec(norm);
-  if (asp) {
+  const candidate = asp ? asp[0] : null;   // the clean ASP-… substring
+
+  // 1) Stored per-station barcode FIRST (full scan or the extracted candidate).
+  // Stored links always win, so remapped/legacy label numbering keeps working.
+  {
+    const st = await pool.query(
+      `SELECT bb.type_id, bb.area_id, t.dimensions, t.reorder_at AS "reorderAt"
+         FROM box_barcodes bb JOIN box_types t ON t.id = bb.type_id
+        WHERE lower(bb.barcode) = $1 OR ($2::text IS NOT NULL AND lower(bb.barcode) = $2)
+        LIMIT 1`,
+      [norm, candidate]
+    );
+    if (st.rows.length) {
+      type = { id: st.rows[0].type_id, dimensions: st.rows[0].dimensions, reorderAt: st.rows[0].reorderAt };
+      matchedAreaId = st.rows[0].area_id;
+    }
+  }
+
+  // 2) No stored link: resolve the box+station from the IDs inside the code
+  // itself, and self-heal the barcode row so next time step 1 hits.
+  if (!type && asp) {
     const tid = parseInt(asp[1], 10), aid = parseInt(asp[2], 10);
     const [tr, ar] = await Promise.all([
       pool.query('SELECT id, dimensions, reorder_at AS "reorderAt" FROM box_types WHERE id = $1', [tid]),
@@ -348,21 +366,7 @@ async function lookupBarcode(code) {
     }
   }
 
-  // 1) Per-station barcode → we know the box AND the station.
-  if (!type) {
-    const st = await pool.query(
-      `SELECT bb.type_id, bb.area_id, t.dimensions, t.reorder_at AS "reorderAt"
-         FROM box_barcodes bb JOIN box_types t ON t.id = bb.type_id
-        WHERE lower(bb.barcode) = $1 LIMIT 1`,
-      [norm]
-    );
-    if (st.rows.length) {
-      type = { id: st.rows[0].type_id, dimensions: st.rows[0].dimensions, reorderAt: st.rows[0].reorderAt };
-      matchedAreaId = st.rows[0].area_id;
-    }
-  }
-
-  // 2) Whole-box barcode or the dimensions text (e.g. a printed "12x6x6").
+  // 3) Whole-box barcode or the dimensions text (e.g. a printed "12x6x6").
   if (!type) {
     const r = await pool.query(
       `SELECT id, dimensions, reorder_at AS "reorderAt"
