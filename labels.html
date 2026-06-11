@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ASP Box Tracker — Barcode Labels</title>
-<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<title>ASP Box Tracker — QR Labels</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <style>
   :root { --bg:#f4f5f7; --ink:#1d2433; --muted:#6b7280; --line:#e5e7eb; --accent:#1e3a8a; }
   * { box-sizing: border-box; }
@@ -18,8 +18,10 @@
   .grid { max-width:1000px; margin:0 auto; padding:0 24px 40px; display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
   .label { background:#fff; border:1px solid var(--line); border-radius:10px; padding:14px; text-align:center; }
   .label .dims { font-size:18px; font-weight:700; margin-bottom:2px; }
-  .label .station { font-size:12px; color:var(--muted); margin-bottom:6px; }
-  .label svg { max-width:100%; height:auto; }
+  .label .station { font-size:12px; color:var(--muted); margin-bottom:8px; }
+  .label .qr { display:flex; justify-content:center; margin-bottom:6px; }
+  .label .qr img, .label .qr canvas { width:120px; height:120px; }
+  .label .code { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
   .note { max-width:1000px; margin:0 auto 10px; padding:0 24px; color:var(--muted); font-size:13px; }
   @media print {
     header, .bar { display:none; }
@@ -31,7 +33,7 @@
 </head>
 <body>
 <header>
-  <h1>🏷️ Box Barcode Labels</h1>
+  <h1>🏷️ Box QR Labels</h1>
   <a href="/">← Tracker</a>
 </header>
 <div class="bar">
@@ -64,24 +66,31 @@ function boxLen(d){ const m=(d||'').match(/\d+(\.\d+)?/g); return m&&m.length?Nu
   (s.barcodes || []).forEach(b => { bc[b.typeId + ':' + b.areaId] = b.barcode; });
   if (!boxes.length || !areas.length) { note.textContent = 'No boxes/areas yet.'; return; }
 
-  // One label per box per station, encoding that station's barcode.
+  // One QR label per box per station, encoding that station's code.
+  function makeQR(cell, id, value) {
+    try {
+      new QRCode(document.getElementById(id), {
+        text: value, width: 120, height: 120,
+        correctLevel: QRCode.CorrectLevel.M,
+      });
+    } catch (e) {
+      cell.innerHTML += `<div style="color:#dc2626;font-size:12px;">QR error</div>`;
+    }
+  }
   let i = 0, count = 0;
   boxes.forEach(t => {
     areas.forEach(a => {
       const value = bc[t.id + ':' + a.id];
       if (!value) return;
-      const id = 'bc' + (i++);
+      const id = 'qr' + (i++);
       const cell = document.createElement('div');
       cell.className = 'label';
       cell.innerHTML = `<div class="dims">${escapeHtml(t.dimensions)}</div>
                         <div class="station">${escapeHtml(a.name)}</div>
-                        <svg id="${id}"></svg>`;
+                        <div class="qr" id="${id}"></div>
+                        <div class="code">${escapeHtml(value)}</div>`;
       grid.appendChild(cell);
-      try {
-        JsBarcode('#' + id, value, { format: 'CODE128', displayValue: true, fontSize: 13, height: 48, margin: 6 });
-      } catch (e) {
-        cell.innerHTML += `<div style="color:#dc2626;font-size:12px;">barcode error</div>`;
-      }
+      makeQR(cell, id, value);
       count++;
     });
   });
@@ -94,14 +103,15 @@ function boxLen(d){ const m=(d||'').match(/\d+(\.\d+)?/g); return m&&m.length?Nu
     h.textContent = 'Order labels — scan when the shipment arrives';
     grid.appendChild(h);
     orders.forEach(o => {
-      const id = 'bc' + (i++);
+      const id = 'qr' + (i++);
       const cell = document.createElement('div');
       cell.className = 'label';
       cell.innerHTML = `<div class="dims">${escapeHtml(o.name || ('Order ' + o.id))}</div>
                         <div class="station">${o.lines.map(l => escapeHtml(l.dimensions) + '×' + l.qty).join(', ') || '(empty)'}</div>
-                        <svg id="${id}"></svg>`;
+                        <div class="qr" id="${id}"></div>
+                        <div class="code">${escapeHtml(o.barcode)}</div>`;
       grid.appendChild(cell);
-      try { JsBarcode('#' + id, o.barcode, { format: 'CODE128', displayValue: true, fontSize: 13, height: 48, margin: 6 }); } catch (e) {}
+      makeQR(cell, id, o.barcode);
     });
   }
   note.textContent = count + ' box labels (' + boxes.length + '×' + areas.length + ')'

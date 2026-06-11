@@ -101,6 +101,25 @@ async function ensureSchema() {
       qty       INTEGER NOT NULL CHECK (qty > 0)
     )
   `);
+  // Receiving status: set when an order is scanned in, so a second scan can be
+  // blocked instead of silently doubling the counts.
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ`);
+
+  // Movement history: every count change, with snapshots of the box/area names
+  // so history survives deletions. This is the audit trail behind recounts.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS box_movements (
+      id          SERIAL PRIMARY KEY,
+      type_id     INTEGER REFERENCES box_types(id) ON DELETE SET NULL,
+      area_id     INTEGER REFERENCES box_areas(id) ON DELETE SET NULL,
+      dimensions  TEXT,
+      area_name   TEXT,
+      delta       INTEGER NOT NULL,
+      reason      TEXT NOT NULL,
+      detail      TEXT,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
 
   const { rows: a } = await pool.query('SELECT count(*)::int AS n FROM box_areas');
   if (a[0].n === 0) {
@@ -130,6 +149,39 @@ function cleanInt(v) {
   return parseInt(s, 10);
 }
 
+// Record one movement in the audit log, snapshotting the box/area names.
+// `client` may be a pool or an open transaction client. Zero deltas are skipped.
+async function logMove(client, typeId, areaId, delta, reason, detail) {
+  if (!delta) return;
+  await client.query(
+    `INSERT INTO box_movements (type_id, area_id, dimensions, area_name, delta, reason, detail)
+     VALUES ($1, $2,
+             (SELECT dimensions FROM box_types WHERE id = $1),
+             (SELECT name FROM box_areas WHERE id = $2),
+             $3, $4, $5)`,
+    [typeId, areaId, delta, String(reason || 'manual'), detail || null]
+  );
+}
+
+// Change one count inside a transaction, clamped at 0, and log the ACTUAL
+// change (which can be smaller than requested when the clamp kicks in).
+// mode 'adjust' adds delta; mode 'set' makes the count exactly `value`.
+async function changeQty(client, areaId, typeId, value, mode, reason, detail) {
+  const { rows } = await client.query(
+    'SELECT quantity FROM box_inventory WHERE area_id = $1 AND type_id = $2 FOR UPDATE',
+    [areaId, typeId]
+  );
+  const cur = rows.length ? rows[0].quantity : 0;
+  const next = Math.max(mode === 'set' ? value : cur + value, 0);
+  await client.query(
+    `INSERT INTO box_inventory (area_id, type_id, quantity) VALUES ($1, $2, $3)
+     ON CONFLICT (area_id, type_id) DO UPDATE SET quantity = $3, updated_at = now()`,
+    [areaId, typeId, next]
+  );
+  await logMove(client, typeId, areaId, next - cur, reason, detail);
+  return next - cur;
+}
+
 // =================================================================
 // Action handlers
 // =================================================================
@@ -149,32 +201,75 @@ async function getState() {
   return { areas: areas.rows, boxTypes: types.rows, inventory, barcodes: bc.rows };
 }
 
-// Increase/decrease a count by delta, clamped at 0, atomically in the DB.
-async function adjustQty(areaId, typeId, delta) {
+// Increase/decrease a count by delta, clamped at 0, with an audit-log entry.
+async function adjustQty(areaId, typeId, delta, reason) {
   const a = cleanInt(areaId), t = cleanInt(typeId), d = cleanInt(delta);
   if (a === null || t === null || d === null) return { error: 'Bad area, type, or delta' };
-  await pool.query(
-    `INSERT INTO box_inventory (area_id, type_id, quantity)
-     VALUES ($1, $2, GREATEST($3, 0))
-     ON CONFLICT (area_id, type_id)
-     DO UPDATE SET quantity = GREATEST(box_inventory.quantity + $3, 0), updated_at = now()`,
-    [a, t, d]
-  );
-  return { ok: true };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const changed = await changeQty(client, a, t, d, 'adjust', reason || (d < 0 ? 'drop' : 'add'));
+    await client.query('COMMIT');
+    return { ok: true, changed };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
-// Set a count to an exact value (clamped at 0).
-async function setQty(areaId, typeId, quantity) {
+// Set a count to an exact value (clamped at 0), with an audit-log entry.
+async function setQty(areaId, typeId, quantity, reason) {
   const a = cleanInt(areaId), t = cleanInt(typeId), q = cleanInt(quantity);
   if (a === null || t === null || q === null) return { error: 'Bad area, type, or quantity' };
-  await pool.query(
-    `INSERT INTO box_inventory (area_id, type_id, quantity)
-     VALUES ($1, $2, GREATEST($3, 0))
-     ON CONFLICT (area_id, type_id)
-     DO UPDATE SET quantity = GREATEST($3, 0), updated_at = now()`,
-    [a, t, q]
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const changed = await changeQty(client, a, t, q, 'set', reason || 'manual set');
+    await client.query('COMMIT');
+    return { ok: true, changed };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Move qty of a box from one area to another in one transaction (clamped to
+// what the source actually has). Used by automatic replenishment and Undo.
+async function transfer(typeId, fromAreaId, toAreaId, qty, reason) {
+  const t = cleanInt(typeId), from = cleanInt(fromAreaId), to = cleanInt(toAreaId), q = cleanInt(qty);
+  if (t === null || from === null || to === null) return { error: 'Bad box or area' };
+  if (q === null || q < 1) return { error: 'Quantity must be 1 or more' };
+  if (from === to) return { error: 'Same area' };
+  const why = String(reason || 'replenish');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const removed = await changeQty(client, from, t, -q, 'adjust', why);
+    const moved = -removed;                       // how many actually came out
+    if (moved > 0) await changeQty(client, to, t, moved, 'adjust', why);
+    await client.query('COMMIT');
+    return { ok: true, moved };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Recent movement history, newest first.
+async function listMovements(limit) {
+  const n = Math.min(Math.max(cleanInt(limit) || 50, 1), 200);
+  const { rows } = await pool.query(
+    `SELECT dimensions, area_name AS "areaName", delta, reason, detail,
+            created_at AS "createdAt"
+       FROM box_movements ORDER BY id DESC LIMIT $1`, [n]
   );
-  return { ok: true };
+  return { movements: rows };
 }
 
 async function addArea(name) {
@@ -338,7 +433,7 @@ async function createOrder(name, lines) {
 
 async function listOrders() {
   const { rows } = await pool.query(`
-    SELECT o.id, o.name,
+    SELECT o.id, o.name, o.received_at AS "receivedAt",
            coalesce(
              json_agg(json_build_object('typeId', l.type_id, 'dimensions', t.dimensions, 'qty', l.qty)
                       ORDER BY t.dimensions) FILTER (WHERE l.id IS NOT NULL),
@@ -349,49 +444,71 @@ async function listOrders() {
       LEFT JOIN box_types t ON t.id = l.type_id
      GROUP BY o.id
      ORDER BY o.id DESC`);
-  return { orders: rows.map(r => ({ id: r.id, name: r.name, barcode: 'ORD-' + r.id, lines: r.lines })) };
+  return { orders: rows.map(r => ({ id: r.id, name: r.name, barcode: 'ORD-' + r.id, receivedAt: r.receivedAt, lines: r.lines })) };
 }
 
 async function lookupOrder(code) {
   const m = /^ord-(\d+)$/i.exec(String(code || '').trim());
   if (!m) return { found: false };
   const id = parseInt(m[1], 10);
-  const { rows: o } = await pool.query('SELECT id, name FROM orders WHERE id = $1', [id]);
+  const { rows: o } = await pool.query('SELECT id, name, received_at AS "receivedAt" FROM orders WHERE id = $1', [id]);
   if (!o.length) return { found: false };
   const { rows: lines } = await pool.query(
     `SELECT l.type_id AS "typeId", t.dimensions, l.qty
        FROM order_lines l JOIN box_types t ON t.id = l.type_id
       WHERE l.order_id = $1 ORDER BY t.dimensions`, [id]
   );
-  return { found: true, order: { id: o[0].id, name: o[0].name, barcode: 'ORD-' + id }, lines };
+  return { found: true, order: { id: o[0].id, name: o[0].name, barcode: 'ORD-' + id, receivedAt: o[0].receivedAt }, lines };
 }
 
-// Fill an order's boxes INTO an area (adds the quantities).
-async function fillOrder(orderId, areaId) {
+// Receive an order INTO an area. Quantities can be overridden at scan time
+// (partial/wrong deliveries) via `lines` [{typeId, qty}]. Already-received
+// orders are refused unless `force` is set (the front-end's explicit override),
+// so a second scan can't silently double the counts.
+async function fillOrder(orderId, areaId, overrideLines, force) {
   const oid = cleanInt(orderId), aid = cleanInt(areaId);
   if (oid === null) return { error: 'Bad order id' };
   if (aid === null) return { error: 'Bad area id' };
-  const { rows: lines } = await pool.query('SELECT type_id, qty FROM order_lines WHERE order_id = $1', [oid]);
-  if (!lines.length) return { error: 'Order has no boxes' };
+
+  const { rows: ord } = await pool.query('SELECT id, name, received_at FROM orders WHERE id = $1', [oid]);
+  if (!ord.length) return { error: 'Order not found' };
+  if (ord[0].received_at && !force) {
+    return { error: 'Order was already received', alreadyReceivedAt: ord[0].received_at };
+  }
+
+  const { rows: expected } = await pool.query('SELECT type_id, qty FROM order_lines WHERE order_id = $1', [oid]);
+  if (!expected.length) return { error: 'Order has no boxes' };
+
+  // Apply overrides: only known lines, clamped to >= 0. Qty 0 = line not delivered.
+  let lines = expected.map(l => ({ typeId: l.type_id, qty: l.qty }));
+  if (Array.isArray(overrideLines)) {
+    const byType = {};
+    for (const o of overrideLines) {
+      const tid = cleanInt(o && o.typeId), q = cleanInt(o && o.qty);
+      if (tid !== null && q !== null && q >= 0) byType[tid] = q;
+    }
+    lines = lines.map(l => ({ typeId: l.typeId, qty: byType[l.typeId] !== undefined ? byType[l.typeId] : l.qty }));
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    let added = 0;
     for (const l of lines) {
-      await client.query(
-        `INSERT INTO box_inventory (area_id, type_id, quantity) VALUES ($1, $2, $3)
-         ON CONFLICT (area_id, type_id)
-         DO UPDATE SET quantity = GREATEST(box_inventory.quantity + $3, 0), updated_at = now()`,
-        [aid, l.type_id, l.qty]
-      );
+      if (l.qty > 0) {
+        await changeQty(client, aid, l.typeId, l.qty, 'adjust', 'order received', 'ORD-' + oid);
+        added++;
+      }
     }
+    await client.query(`UPDATE orders SET received_at = now() WHERE id = $1`, [oid]);
     await client.query('COMMIT');
+    return { ok: true, lines: added };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
   } finally {
     client.release();
   }
-  return { ok: true, lines: lines.length };
 }
 
 async function deleteOrder(id) {
@@ -425,8 +542,10 @@ app.post('/api', async (req, res) => {
     let out;
     switch (body.action) {
       case 'getState':   out = await getState(); break;
-      case 'adjustQty':  out = await adjustQty(body.areaId, body.typeId, body.delta); break;
-      case 'setQty':     out = await setQty(body.areaId, body.typeId, body.quantity); break;
+      case 'adjustQty':  out = await adjustQty(body.areaId, body.typeId, body.delta, body.reason); break;
+      case 'setQty':     out = await setQty(body.areaId, body.typeId, body.quantity, body.reason); break;
+      case 'transfer':   out = await transfer(body.typeId, body.fromAreaId, body.toAreaId, body.qty, body.reason); break;
+      case 'listMovements': out = await listMovements(body.limit); break;
       case 'addArea':    out = await addArea(body.name); break;
       case 'addType':    out = await addType(body.dimensions, body.reorderAt); break;
       case 'deleteArea': out = await deleteArea(body.id); break;
@@ -437,7 +556,7 @@ app.post('/api', async (req, res) => {
       case 'createOrder': out = await createOrder(body.name, body.lines); break;
       case 'listOrders':  out = await listOrders(); break;
       case 'lookupOrder': out = await lookupOrder(body.code); break;
-      case 'fillOrder':   out = await fillOrder(body.orderId, body.areaId); break;
+      case 'fillOrder':   out = await fillOrder(body.orderId, body.areaId, body.lines, body.force); break;
       case 'deleteOrder': out = await deleteOrder(body.id); break;
       default:           out = { error: 'Unknown action: ' + body.action };
     }

@@ -176,7 +176,18 @@
   .oc-line input { width: 64px; font: inherit; padding: 9px; border: 1px solid var(--line); border-radius: 8px; text-align: center; }
   .oc-line .rm { color: var(--danger); border: none; background: none; font-size: 18px; padding: 4px 8px; }
   .order-summary { text-align: left; display: grid; gap: 6px; margin: 10px 0; }
-  .order-summary .ol { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  .order-summary .ol { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  .ol-qty { width: 72px; font: inherit; font-size: 16px; text-align: center; padding: 8px 4px; border: 1px solid var(--line); border-radius: 8px; }
+  .received-chip { display: inline-block; font-size: 11px; font-weight: 700; color: #065f46; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 5px; padding: 1px 7px; margin-left: 6px; vertical-align: middle; }
+  .activity { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 4px 14px; }
+  .activity .mv { display: flex; gap: 10px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .activity .mv:last-child { border-bottom: none; }
+  .mv .when { color: var(--muted); white-space: nowrap; font-size: 12px; min-width: 96px; }
+  .mv .delta { font-weight: 800; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+  .mv .delta.neg { color: var(--danger); }
+  .mv .delta.pos { color: #16a34a; }
+  .mv .what { font-weight: 600; }
+  .mv .why { color: var(--muted); }
 
   /* ---- Small rugged handheld screens (e.g. Chainway C61, ~4") ---- */
   @media (max-width: 560px) {
@@ -232,6 +243,7 @@
   <div class="statusbar">
     <span class="dot" id="dot"></span>
     <span id="statusText">Loading…</span>
+    <button class="tiny" id="undoBtn" hidden style="color:var(--accent);font-weight:700;">↩ Undo</button>
     <a class="navlink" href="/display" style="margin-left:auto;">📺 Display</a>
     <a class="navlink" href="/labels">🏷️ Labels</a>
     <button class="tiny" id="refresh">Refresh</button>
@@ -282,6 +294,10 @@
     </p>
     <div class="toolbar"><button class="primary" id="newOrder">+ New order</button></div>
     <div id="orderList"></div>
+
+    <h3 class="manage-h">Recent activity</h3>
+    <p class="hint" style="margin-top:0;">Every count change is recorded here — takes, restocks, replenishments, and received orders.</p>
+    <div class="activity" id="activityList"></div>
   </section>
 
   <!-- Barcode assign / change modal -->
@@ -315,19 +331,18 @@
     </div>
   </div>
 
-  <!-- Transfer prompt: taking from Box Area asks if it's going to Loading Dock -->
+  <!-- Box Area take: enter the quantity; replenishment to the Loading Dock is automatic -->
   <div id="transferModal" class="modal" hidden>
     <div class="modal-card">
       <h3 id="tfTitle">Take from Box Area</h3>
       <p class="modal-sub" id="tfSub"></p>
-      <label class="modal-label">How many?
+      <label class="modal-label">How many taken?
         <input id="tfQty" type="number" min="1" value="1" inputmode="numeric">
       </label>
       <p class="tf-q" id="tfQ"></p>
       <div class="modal-actions">
         <button id="tfCancel">Cancel</button>
-        <button id="tfNo">No, just remove</button>
-        <button id="tfYes" class="primary">Yes, move them</button>
+        <button id="tfYes" class="primary">Take</button>
       </div>
     </div>
   </div>
@@ -420,14 +435,14 @@ function byLength(a, b) {
 }
 
 // ---- Mutations (optimistic, then persist) ------------------------------
-async function adjustQty(areaId, typeId, delta) {
+async function adjustQty(areaId, typeId, delta, reason) {
   const key = `${areaId}:${typeId}`;
   const next = Math.max((state.inventory[key] || 0) + delta, 0);
   if (next === 0) delete state.inventory[key]; else state.inventory[key] = next;
   render();                       // instant feedback
   savingCount++;
   try {
-    await api('adjustQty', { areaId, typeId, delta });
+    await api('adjustQty', { areaId, typeId, delta, reason });
     setStatus('ok', 'Saved');
   } catch (e) {
     setStatus('err', 'Could not save — reloading latest. ' + e.message);
@@ -617,8 +632,30 @@ document.querySelector('.tabs').addEventListener('click', (e) => {
   document.querySelectorAll('.tab-panel').forEach(p => {
     p.hidden = (p.id !== 'tab-' + tab.dataset.tab);
   });
-  if (tab.dataset.tab === 'manage') loadOrders();
+  if (tab.dataset.tab === 'manage') { loadOrders(); loadActivity(); }
 });
+
+// Recent movement history for the Manage tab.
+async function loadActivity() {
+  const box = document.getElementById('activityList');
+  try {
+    const { movements } = await api('listMovements', { limit: 50 });
+    if (!movements.length) { box.innerHTML = '<div class="mv"><span class="why">No activity yet.</span></div>'; return; }
+    box.innerHTML = movements.map(m => {
+      const d = new Date(m.createdAt);
+      const when = `${d.toLocaleDateString(undefined,{month:'short',day:'numeric'})} ${d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}`;
+      const sign = m.delta > 0 ? '+' : '';
+      return `<div class="mv">
+        <span class="when">${when}</span>
+        <span class="delta ${m.delta < 0 ? 'neg' : 'pos'}">${sign}${m.delta}</span>
+        <span class="what">${escapeHtml(m.dimensions || '?')}</span>
+        <span class="why">@ ${escapeHtml(m.areaName || '?')} — ${escapeHtml(m.reason)}${m.detail ? ' (' + escapeHtml(m.detail) + ')' : ''}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = `<div class="mv"><span class="why">Could not load activity: ${escapeHtml(e.message)}</span></div>`;
+  }
+}
 
 document.getElementById('areas').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-act]');
@@ -736,20 +773,21 @@ scanModal.addEventListener('click', (e) => {
 });
 document.getElementById('scanDone').onclick = closeScanPopup;
 
-// ---- Drop, with Box Area → Loading Dock transfer prompt ----------------
+// ---- Drop, with automatic Box Area → Loading Dock replenishment --------
 function boxAreaArea() { return state.areas.find(a => /box\s*area/i.test(a.name)); }
 function loadingDockArea() { return state.areas.find(a => /loading\s*dock/i.test(a.name)); }
 
-// A "Drop" (take). From the Box Area it asks whether those boxes are going to
-// the Loading Dock; from any other station it just removes one.
+// A "Drop" (take). From the Box Area it asks how many, then AUTOMATICALLY
+// moves them to the Loading Dock; from any other station it removes one.
 function dropFrom(areaId, typeId) {
   const ba = boxAreaArea(), ld = loadingDockArea();
   if (ba && ld && areaId === ba.id) openTransferDialog(typeId, ba, ld);
-  else adjustQty(areaId, typeId, -1);
+  else adjustQty(areaId, typeId, -1, 'drop');
 }
 
 const transferModal = document.getElementById('transferModal');
 let tfCtx = null;
+let lastTransfer = null;   // for Undo
 function openTransferDialog(typeId, ba, ld) {
   tfCtx = { typeId, ba, ld };
   modalOpen = true;                                  // pause scanning while open
@@ -757,35 +795,50 @@ function openTransferDialog(typeId, ba, ld) {
   const avail = getQty(ba.id, typeId);
   document.getElementById('tfTitle').textContent = `Take from ${ba.name}`;
   document.getElementById('tfSub').textContent = `${t ? t.dimensions : ''} — ${avail} in ${ba.name} now.`;
-  document.getElementById('tfQ').innerHTML = `Are these going to the <b>${escapeHtml(ld.name)}</b>?`;
+  document.getElementById('tfQ').innerHTML = `They'll be added to the <b>${escapeHtml(ld.name)}</b> automatically.`;
   const q = document.getElementById('tfQty');
   q.value = '1';
   transferModal.hidden = false;
   setTimeout(() => { q.focus(); q.select(); }, 30);
 }
 function closeTransfer() { transferModal.hidden = true; modalOpen = false; tfCtx = null; focusScan(); }
-async function applyTransfer(move) {
+async function applyTransfer() {
   if (!tfCtx) return;
   const { typeId, ba, ld } = tfCtx;
   let qty = parseInt(document.getElementById('tfQty').value, 10);
   if (!Number.isInteger(qty) || qty < 1) qty = 1;
-  const moved = Math.min(qty, getQty(ba.id, typeId));   // never move more than is there
   closeTransfer();
-  if (moved <= 0) { setStatus('err', `${ba.name} is empty for that box.`); return; }
-  await adjustQty(ba.id, typeId, -moved);               // take out of Box Area
-  if (move) {
-    await adjustQty(ld.id, typeId, moved);              // ...and into the Loading Dock
-    setStatus('ok', `Moved ${moved} from ${ba.name} to ${ld.name}.`);
-  } else {
-    setStatus('ok', `Removed ${moved} from ${ba.name}.`);
+  try {
+    const r = await api('transfer', { typeId, fromAreaId: ba.id, toAreaId: ld.id, qty, reason: 'replenish' });
+    await refresh();
+    if (r.moved <= 0) { setStatus('err', `${ba.name} is empty for that box.`); return; }
+    lastTransfer = { typeId, from: ba.id, to: ld.id, qty: r.moved };
+    document.getElementById('undoBtn').hidden = false;
+    setStatus('ok', `Moved ${r.moved} from ${ba.name} to ${ld.name}.`);
+  } catch (e) {
+    setStatus('err', 'Could not move boxes: ' + e.message);
   }
 }
-document.getElementById('tfYes').onclick = () => applyTransfer(true);
-document.getElementById('tfNo').onclick = () => applyTransfer(false);
+async function undoTransfer() {
+  if (!lastTransfer) return;
+  const u = lastTransfer;
+  lastTransfer = null;
+  document.getElementById('undoBtn').hidden = true;
+  try {
+    await api('transfer', { typeId: u.typeId, fromAreaId: u.to, toAreaId: u.from, qty: u.qty, reason: 'undo' });
+    await refresh();
+    setStatus('ok', `Undone — moved ${u.qty} back.`);
+  } catch (e) {
+    setStatus('err', 'Undo failed: ' + e.message);
+  }
+  focusScan();
+}
+document.getElementById('tfYes').onclick = applyTransfer;
 document.getElementById('tfCancel').onclick = closeTransfer;
-// Enter in the quantity field = the primary action (Yes, move them).
+document.getElementById('undoBtn').onclick = undoTransfer;
+// Enter in the quantity field = Take (scanner trigger also sends Enter).
 document.getElementById('tfQty').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); applyTransfer(true); }
+  if (e.key === 'Enter') { e.preventDefault(); applyTransfer(); }
 });
 transferModal.addEventListener('click', (e) => { if (e.target === transferModal) closeTransfer(); });
 
@@ -796,14 +849,21 @@ function openOrderPopup(ord) {
   orderToFill = ord;
   modalOpen = true;
   const ba = boxAreaArea();
+  const already = !!ord.order.receivedAt;
+  // Editable quantity per line — adjust for partial or wrong deliveries.
   const rows = (ord.lines || []).map(l =>
-    `<div class="ol"><span>${escapeHtml(l.dimensions)}</span><b>${l.qty}</b></div>`).join('')
+    `<div class="ol"><span>${escapeHtml(l.dimensions)}</span>
+       <input class="ol-qty" data-type="${l.typeId}" type="number" min="0" value="${l.qty}" inputmode="numeric"></div>`).join('')
     || '<div class="ol">(no boxes on this order)</div>';
+  const warn = already
+    ? `<p class="tf-q" style="color:var(--danger);font-weight:700;">⚠️ Already received on ${new Date(ord.order.receivedAt).toLocaleDateString()}. Receiving again will ADD these counts a second time.</p>`
+    : `<p class="tf-q">Adjust the quantities if the delivery was short, then add to the <b>${escapeHtml(ba ? ba.name : 'Box Area')}</b>.</p>`;
   document.getElementById('orderModalBody').innerHTML = `
     <h3 class="scan-dims" style="font-size:24px;">📦 ${escapeHtml(ord.order.name || ('Order ' + ord.order.id))}</h3>
     <div class="scan-total">${ord.order.barcode}</div>
     <div class="order-summary">${rows}</div>
-    <p class="tf-q">Add these boxes to the <b>${escapeHtml(ba ? ba.name : 'Box Area')}</b>?</p>`;
+    ${warn}`;
+  document.getElementById('orderYes').textContent = already ? 'Receive AGAIN anyway' : 'Add to Box Area';
   orderModal.hidden = false;
 }
 function closeOrderPopup() { orderModal.hidden = true; modalOpen = false; orderToFill = null; focusScan(); }
@@ -811,10 +871,15 @@ async function confirmFillOrder() {
   if (!orderToFill) return;
   const ba = boxAreaArea();
   const ord = orderToFill;
+  // Collect the (possibly edited) quantities before closing the popup.
+  const lines = [...document.querySelectorAll('#orderModalBody .ol-qty')].map(inp => ({
+    typeId: Number(inp.dataset.type),
+    qty: Math.max(parseInt(inp.value, 10) || 0, 0),
+  }));
   closeOrderPopup();
   if (!ba) { setStatus('err', 'No Box Area found.'); return; }
   try {
-    const r = await api('fillOrder', { orderId: ord.order.id, areaId: ba.id });
+    const r = await api('fillOrder', { orderId: ord.order.id, areaId: ba.id, lines, force: !!ord.order.receivedAt });
     await refresh();
     setStatus('ok', `Added ${ord.order.name || ('order ' + ord.order.id)} to ${ba.name} (${r.lines} box size(s)).`);
   } catch (e) {
@@ -876,11 +941,12 @@ async function loadOrders() {
     if (!orders.length) { box.innerHTML = '<p class="hint" style="margin-top:0;">No orders yet.</p>'; return; }
     box.innerHTML = orders.map(o => {
       const lines = o.lines.map(l => `${escapeHtml(l.dimensions)} ×${l.qty}`).join(', ') || '(empty)';
+      const chip = o.receivedAt ? `<span class="received-chip">✓ received ${new Date(o.receivedAt).toLocaleDateString()}</span>` : '';
       return `<div class="order-card">
-        <div class="o-name">${escapeHtml(o.name || ('Order ' + o.id))} <span class="o-code">${o.barcode}</span></div>
+        <div class="o-name">${escapeHtml(o.name || ('Order ' + o.id))} <span class="o-code">${o.barcode}</span>${chip}</div>
         <div class="o-lines">${lines}</div>
         <div class="o-actions">
-          <button class="primary" data-oact="fill" data-id="${o.id}">Add to Box Area</button>
+          <button class="primary" data-oact="fill" data-id="${o.id}" data-received="${o.receivedAt ? '1' : ''}">${o.receivedAt ? 'Receive again' : 'Add to Box Area'}</button>
           <button class="link" data-oact="del" data-id="${o.id}">delete</button>
         </div>
       </div>`;
@@ -896,7 +962,9 @@ document.getElementById('orderList').addEventListener('click', async (e) => {
   if (btn.dataset.oact === 'fill') {
     const ba = boxAreaArea();
     if (!ba) { setStatus('err', 'No Box Area found.'); return; }
-    try { const r = await api('fillOrder', { orderId: id, areaId: ba.id }); await refresh(); setStatus('ok', `Added order to ${ba.name} (${r.lines} box size(s)).`); }
+    const force = btn.dataset.received === '1';
+    if (force && !confirm('This order was already received. Add its boxes AGAIN?')) return;
+    try { const r = await api('fillOrder', { orderId: id, areaId: ba.id, force }); await refresh(); loadOrders(); setStatus('ok', `Added order to ${ba.name} (${r.lines} box size(s)).`); }
     catch (err) { setStatus('err', 'Could not fill: ' + err.message); }
   } else if (btn.dataset.oact === 'del') {
     if (!confirm('Delete this order?')) return;
