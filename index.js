@@ -276,6 +276,7 @@ async function addArea(name) {
   const n = String(name || '').trim();
   if (!n) return { error: 'Area name is required' };
   const { rows } = await pool.query('INSERT INTO box_areas (name) VALUES ($1) RETURNING id', [n]);
+  await ensureStationBarcodes();   // every box gets a code at the new area immediately
   return { ok: true, id: rows[0].id };
 }
 
@@ -291,6 +292,7 @@ async function addType(dimensions, reorderAt) {
   const { rows } = await pool.query(
     'INSERT INTO box_types (dimensions, reorder_at) VALUES ($1, $2) RETURNING id', [dim, ro]
   );
+  await ensureStationBarcodes();   // the new size gets a code at every area immediately
   return { ok: true, id: rows[0].id };
 }
 
@@ -570,8 +572,9 @@ app.post('/api', async (req, res) => {
 (async () => {
   try {
     await ensureSchema();
+    await ensureStationBarcodes();   // every box×area pair always has a scannable code
   } catch (e) {
-    console.error('ensureSchema failed (continuing to serve anyway):', e);
+    console.error('startup migration failed (continuing to serve anyway):', e);
   }
   app.listen(PORT, () => console.log('ASP Box Tracker listening on port', PORT));
 })();

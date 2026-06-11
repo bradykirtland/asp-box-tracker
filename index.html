@@ -689,9 +689,10 @@ function openBarcodeModal({ code = '', typeId = null, areaId = null }) {
   // Prefill the code: the scanned code, or the existing barcode for this box+station.
   const existing = (typeId != null && areaId != null) ? bcFor(typeId, areaId) : '';
   document.getElementById('bcValue').value = code || existing;
-  document.getElementById('bcTitle').textContent = existing ? 'Change barcode' : 'Set barcode';
+  document.getElementById('bcTitle').textContent = code ? 'New code — link it once'
+    : (existing ? 'Change barcode' : 'Set barcode');
   document.getElementById('bcSub').textContent = code
-    ? `Assign scanned code "${code}" to a box and station.`
+    ? `"${code}" isn't linked to a box yet (this happens with a box's own factory barcode). Pick which box and station it belongs to and it'll be remembered from now on — or Cancel and scan the wall QR label instead.`
     : 'Scan or type the barcode for this box at this station.';
   bcModal.hidden = false;
   setTimeout(() => document.getElementById('bcValue').focus(), 30);
