@@ -414,7 +414,8 @@ function sendPage(res, file) {
 }
 
 app.get('/', (req, res) => sendPage(res, 'index.html'));
-app.get('/labels', (req, res) => sendPage(res, 'labels.html'));  // printable barcodes
+app.get('/labels', (req, res) => sendPage(res, 'labels.html'));    // printable barcodes
+app.get('/display', (req, res) => sendPage(res, 'display.html'));  // read-only wall display
 
 app.get('/health', (req, res) => res.json({ ok: true, app: 'asp-box-tracker' }));
 

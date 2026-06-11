@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASP Box Tracker — Display</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --ink: #1d2433; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #1e3a8a; --accent-soft: #eef2ff;
+    --danger: #dc2626; --green: #16a34a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--ink);
+  }
+  header {
+    background: var(--accent); color: #fff; padding: 16px 26px;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  }
+  header h1 { margin: 0; font-size: 24px; }
+  .updated { color: #c7d2fe; font-size: 14px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 22px; }
+
+  /* ---- Reorder section (always on top, always expanded) ---- */
+  .reorder-wrap { margin-bottom: 24px; }
+  .reorder-title {
+    font-size: 20px; font-weight: 800; color: var(--danger);
+    display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+  }
+  .reorder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .reorder-card {
+    background: #fef2f2; border: 2px solid #fecaca; border-radius: 12px; padding: 14px 16px;
+  }
+  .reorder-card .dims { font-size: 26px; font-weight: 800; }
+  .reorder-card .left { font-size: 15px; margin: 4px 0 8px; }
+  .reorder-card .left b { color: var(--danger); }
+  .reorder-card .split { font-size: 13px; color: var(--muted); }
+  .all-good {
+    background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 12px;
+    padding: 14px 18px; color: #065f46; font-size: 17px; font-weight: 600;
+  }
+
+  /* ---- Per-area dropdowns ---- */
+  details.area {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    margin-bottom: 14px; overflow: hidden;
+  }
+  details.area summary {
+    cursor: pointer; list-style: none; padding: 16px 20px;
+    display: flex; align-items: center; gap: 12px;
+    background: var(--accent-soft); font-size: 19px; font-weight: 700;
+    user-select: none;
+  }
+  details.area summary::-webkit-details-marker { display: none; }
+  summary .chev { transition: transform .15s; font-size: 14px; color: var(--accent); }
+  details[open] summary .chev { transform: rotate(90deg); }
+  summary .stats { margin-left: auto; font-size: 14px; font-weight: 500; color: var(--muted); }
+  summary .stats b { color: var(--ink); }
+  .boxes { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1px; background: var(--line); }
+  .box {
+    background: var(--card); padding: 14px 16px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .box .d { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .box .q { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .box .q.zero { color: var(--danger); }
+  .box.low-row { background: #fef2f2; }
+  .lowtag {
+    font-size: 10px; font-weight: 700; color: #fff; background: var(--danger);
+    border-radius: 4px; padding: 1px 6px; text-transform: uppercase; margin-left: 6px;
+    vertical-align: middle;
+  }
+  .offline {
+    position: fixed; top: 0; left: 0; right: 0; background: var(--danger); color: #fff;
+    text-align: center; padding: 6px; font-weight: 700; z-index: 99; display: none;
+  }
+
+  /* Larger type on big screens (wall TV) */
+  @media (min-width: 1400px) {
+    header h1 { font-size: 30px; }
+    .reorder-card .dims { font-size: 32px; }
+    details.area summary { font-size: 23px; }
+    .box .d { font-size: 21px; }
+    .box .q { font-size: 30px; }
+  }
+</style>
+</head>
+<body>
+<div class="offline" id="offline">Connection lost — counts may be out of date</div>
+<header>
+  <h1>📦 Box Inventory</h1>
+  <span class="updated" id="updated">loading…</span>
+</header>
+
+<main>
+  <div class="reorder-wrap" id="reorderWrap"></div>
+  <div id="areas"></div>
+</main>
+
+<script>
+// Read-only display: no scanning, no edits. Polls for fresh counts and keeps
+// each area's dropdown open/closed exactly as the viewer left it.
+let state = { areas: [], boxTypes: [], inventory: {} };
+const POLL_MS = 15000;
+
+async function api(action) {
+  const res = await fetch('/api', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+  const data = await res.json();
+  if (data && data.error) throw new Error(data.error);
+  return data;
+}
+
+function escapeHtml(s) {
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g,
+    c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+function getQty(areaId, typeId) { return state.inventory[`${areaId}:${typeId}`] || 0; }
+function totalForType(typeId) { return state.areas.reduce((s, a) => s + getQty(a.id, typeId), 0); }
+function isLow(t) { return t.reorderAt != null && totalForType(t.id) <= t.reorderAt; }
+function boxLength(t) {
+  const m = (t.dimensions || '').match(/\d+(\.\d+)?/g);
+  return m && m.length ? Number(m[0]) : Infinity;
+}
+function byLength(a, b) { return boxLength(a) - boxLength(b) || (a.dimensions || '').localeCompare(b.dimensions || ''); }
+
+function render() {
+  // ---- Reorder section ----
+  const low = state.boxTypes.filter(isLow).sort(byLength);
+  const wrap = document.getElementById('reorderWrap');
+  if (low.length) {
+    wrap.innerHTML = `
+      <div class="reorder-title">⚠️ Reorder needed — ${low.length} box size(s)</div>
+      <div class="reorder-grid">
+        ${low.map(t => {
+          const total = totalForType(t.id);
+          const split = state.areas.map(a => `${escapeHtml(a.name)}: ${getQty(a.id, t.id)}`).join(' · ');
+          return `<div class="reorder-card">
+            <div class="dims">${escapeHtml(t.dimensions)}</div>
+            <div class="left"><b>${total === 0 ? 'OUT OF STOCK' : total + ' left'}</b> — reorder at ${t.reorderAt}</div>
+            <div class="split">${split}</div>
+          </div>`;
+        }).join('')}
+      </div>`;
+  } else {
+    wrap.innerHTML = `<div class="all-good">✅ All box sizes are stocked — nothing needs reordering.</div>`;
+  }
+
+  // ---- Per-area dropdowns (preserve open/closed state across refreshes) ----
+  const openState = {};
+  document.querySelectorAll('details.area').forEach(d => { openState[d.dataset.area] = d.open; });
+
+  const container = document.getElementById('areas');
+  container.innerHTML = state.areas.map(area => {
+    const types = [...state.boxTypes].sort(byLength);
+    const present = types.filter(t => getQty(area.id, t.id) > 0).length;
+    const total = types.reduce((s, t) => s + getQty(area.id, t.id), 0);
+    const open = openState[area.id] === undefined ? false : openState[area.id];
+    return `<details class="area" data-area="${area.id}" ${open ? 'open' : ''}>
+      <summary><span class="chev">▶</span>${escapeHtml(area.name)}
+        <span class="stats"><b>${present}</b> size(s) stocked · <b>${total}</b> boxes</span>
+      </summary>
+      <div class="boxes">
+        ${types.map(t => {
+          const q = getQty(area.id, t.id);
+          return `<div class="box${isLow(t) ? ' low-row' : ''}">
+            <span class="d">${escapeHtml(t.dimensions)}${isLow(t) ? '<span class="lowtag">low</span>' : ''}</span>
+            <span class="q${q === 0 ? ' zero' : ''}">${q}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </details>`;
+  }).join('');
+}
+
+function stamp(ok) {
+  document.getElementById('offline').style.display = ok ? 'none' : 'block';
+  if (ok) {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    document.getElementById('updated').textContent = `updated ${hh}:${mm}:${ss}`;
+  }
+}
+
+async function refresh() {
+  try {
+    state = await api('getState');
+    render();
+    stamp(true);
+  } catch (e) {
+    stamp(false);
+  }
+}
+
+refresh();
+setInterval(refresh, POLL_MS);
+</script>
+</body>
+</html>
