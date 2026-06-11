@@ -20,7 +20,6 @@
     display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
   }
   header h1 { margin: 0; font-size: 24px; }
-  .updated { color: #c7d2fe; font-size: 14px; }
   main { max-width: 1100px; margin: 0 auto; padding: 22px; }
 
   /* ---- Reorder section (always on top, always expanded) ---- */
@@ -90,8 +89,7 @@
 <body>
 <div class="offline" id="offline">Connection lost — counts may be out of date</div>
 <header>
-  <h1>📦 Box Inventory</h1>
-  <span class="updated" id="updated">loading…</span>
+  <h1>📦 ASP Warehouse Box Inventory</h1>
 </header>
 
 <main>
@@ -179,13 +177,6 @@ function render() {
 
 function stamp(ok) {
   document.getElementById('offline').style.display = ok ? 'none' : 'block';
-  if (ok) {
-    const d = new Date();
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    const ss = String(d.getSeconds()).padStart(2, '0');
-    document.getElementById('updated').textContent = `updated ${hh}:${mm}:${ss}`;
-  }
 }
 
 async function refresh() {
